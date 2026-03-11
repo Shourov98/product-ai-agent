@@ -1,6 +1,3 @@
-def main():
-    print("Hello from product-ai-agent!")
+from app.main import app, create_app
 
-
-if __name__ == "__main__":
-    main()
+__all__ = ["app", "create_app"]
