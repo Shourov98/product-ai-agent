@@ -7,8 +7,11 @@ from app.agents.core_agent import CoreAgent
 from app.agents.ebay_agent import EbayAgent
 from app.agents.tiktok_agent import TikTokAgent
 from app.agents.vision_agent import VisionAgent
+from app.config import get_settings
 from app.schemas.response import ProductPipelineResponse
 from app.services.image_service import ImagePayload
+from app.services.ollama_service import OllamaService
+from app.services.output_service import OutputService
 
 
 class ProductPipeline:
@@ -21,25 +24,40 @@ class ProductPipeline:
         tiktok: TikTokAgent | None = None,
         ebay: EbayAgent | None = None,
     ) -> None:
+        settings = get_settings()
+        self.output_service = OutputService(settings.output_dir)
+        self.ollama_service = OllamaService(
+            base_url=settings.ollama_base_url,
+            model=settings.ollama_model,
+            enabled=settings.ollama_enabled,
+        )
         self.vision = vision or VisionAgent()
-        self.core = core or CoreAgent()
-        self.amazon = amazon or AmazonAgent()
-        self.tiktok = tiktok or TikTokAgent()
-        self.ebay = ebay or EbayAgent()
+        self.core = core or CoreAgent(self.ollama_service)
+        self.amazon = amazon or AmazonAgent(self.ollama_service)
+        self.tiktok = tiktok or TikTokAgent(self.ollama_service)
+        self.ebay = ebay or EbayAgent(self.ollama_service)
 
     async def run(self, image: ImagePayload, title: str) -> ProductPipelineResponse:
+        run_dir = self.output_service.create_run_dir()
         vision_data = await self.vision.process(image)
+        self.output_service.save_json(run_dir, "vision", vision_data.model_dump())
         core_data = await self.core.process(title, vision_data)
+        self.output_service.save_json(run_dir, "core", core_data.model_dump())
 
         amazon_data, tiktok_data, ebay_data = await asyncio.gather(
             self.amazon.process(core_data),
             self.tiktok.process(core_data),
             self.ebay.process(core_data),
         )
+        self.output_service.save_json(run_dir, "amazon", amazon_data.model_dump())
+        self.output_service.save_json(run_dir, "tiktok", tiktok_data.model_dump())
+        self.output_service.save_json(run_dir, "ebay", ebay_data.model_dump())
 
-        return ProductPipelineResponse(
+        response = ProductPipelineResponse(
             core=core_data,
             amazon=amazon_data,
             tiktok=tiktok_data,
             ebay=ebay_data,
         )
+        self.output_service.save_json(run_dir, "final", response.model_dump())
+        return response

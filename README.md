@@ -17,8 +17,25 @@ Deterministic FastAPI backend for product listing generation from an uploaded im
 uvicorn app.main:app --reload
 ```
 
+To use Ollama-backed text agents:
+
+```bash
+ollama serve
+uv run uvicorn app.main:app --reload --env-file .env
+```
+
+Set these env vars:
+
+```bash
+OLLAMA_ENABLED=true
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen3:8b
+```
+
 ## Test
 
 ```bash
 pytest
 ```
+
+Each request writes JSON files to `output/<run_id>/`.
