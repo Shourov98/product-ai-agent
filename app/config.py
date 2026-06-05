@@ -15,6 +15,10 @@ class Settings(BaseModel):
     ollama_enabled: bool = True
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
+    openai_enabled: bool = False
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-5"
+    openai_image_model: str = "gpt-image-1"
 
 
 def get_settings() -> Settings:
@@ -27,4 +31,8 @@ def get_settings() -> Settings:
         ollama_enabled=os.getenv("OLLAMA_ENABLED", "true").lower() == "true",
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
         ollama_model=os.getenv("OLLAMA_MODEL", "qwen3:8b"),
+        openai_enabled=os.getenv("OPENAI_ENABLED", "false").lower() == "true",
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-5"),
+        openai_image_model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1"),
     )

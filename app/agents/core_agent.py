@@ -1,17 +1,55 @@
 from __future__ import annotations
 
-import re
-
 from app.schemas.response import CoreProductResponse, VisionResponse
+from app.services.openai_service import OpenAIService, OpenAIServiceError
 from app.services.ollama_service import OllamaService, OllamaServiceError
+from app.utils.product_text import build_category, infer_product_type, normalize_title, sentence_case_summary, title_keywords, unique_strings
 
 
 class CoreAgent:
-    def __init__(self, ollama_service: OllamaService | None = None) -> None:
+    _SCHEMA = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "normalized_title",
+            "category",
+            "product_type",
+            "product_summary",
+            "features",
+            "attributes",
+        ],
+        "properties": {
+            "normalized_title": {"type": "string"},
+            "category": {"type": "string"},
+            "product_type": {"type": "string"},
+            "product_summary": {"type": "string"},
+            "features": {"type": "array", "items": {"type": "string"}, "minItems": 4, "maxItems": 8},
+            "attributes": {"type": "object", "additionalProperties": {"type": "string"}},
+        },
+    }
+
+    def __init__(
+        self,
+        ollama_service: OllamaService | None = None,
+        openai_service: OpenAIService | None = None,
+    ) -> None:
         self.ollama_service = ollama_service
+        self.openai_service = openai_service
 
     async def process(self, title: str, vision_data: VisionResponse) -> CoreProductResponse:
         fallback = self._build_fallback(title, vision_data)
+        if self.openai_service is not None:
+            try:
+                data = await self.openai_service.generate_structured_output(
+                    system_prompt=self._build_openai_system_prompt(),
+                    user_payload=self._build_user_payload(title, vision_data),
+                    schema_name="core_product",
+                    schema=self._SCHEMA,
+                )
+                return self._response_from_data(data, fallback, title, vision_data)
+            except OpenAIServiceError:
+                pass
+
         if self.ollama_service is None:
             return fallback
 
@@ -21,7 +59,15 @@ class CoreAgent:
         except OllamaServiceError:
             return fallback
 
-        data = result.parsed
+        return self._response_from_data(result.parsed, fallback, title, vision_data)
+
+    def _response_from_data(
+        self,
+        data: dict[str, object],
+        fallback: CoreProductResponse,
+        title: str,
+        vision_data: VisionResponse,
+    ) -> CoreProductResponse:
         return CoreProductResponse(
             normalized_title=str(data.get("normalized_title", fallback.normalized_title)),
             category=str(data.get("category", fallback.category)),
@@ -34,16 +80,17 @@ class CoreAgent:
         )
 
     def _build_fallback(self, title: str, vision_data: VisionResponse) -> CoreProductResponse:
-        normalized_title = self._normalize_title(title)
+        normalized_title = normalize_title(title)
         attributes = self._merge_attributes(vision_data)
-        category = self._build_category(vision_data.product_type)
+        product_type = infer_product_type(title, vision_data.product_type, vision_data.image_analysis.filename)
+        category = build_category(product_type)
         features = self._build_features(normalized_title, attributes, vision_data)
-        summary = self._build_summary(normalized_title, category, attributes)
+        summary = self._build_summary(normalized_title, category, attributes, product_type)
 
         return CoreProductResponse(
             normalized_title=normalized_title,
             category=category,
-            product_type=vision_data.product_type,
+            product_type=product_type,
             product_summary=summary,
             features=features,
             attributes=attributes,
@@ -52,22 +99,38 @@ class CoreAgent:
         )
 
     @staticmethod
+    def _build_openai_system_prompt() -> str:
+        return (
+            "You are a senior ecommerce catalog normalization agent. "
+            "Produce production-grade product data from a source title and lightweight vision cues. "
+            "Write commercially useful, concise output. Avoid mentioning internal confidence, normalization, pipelines, or AI. "
+            "Do not invent certifications, dimensions, or unsupported claims. "
+            "Return only JSON matching the provided schema."
+        )
+
+    @staticmethod
+    def _build_user_payload(title: str, vision_data: VisionResponse) -> dict[str, object]:
+        return {
+            "source_title": title,
+            "vision_product_type": vision_data.product_type,
+            "vision_confidence": vision_data.confidence,
+            "vision_attributes": [item.model_dump() for item in vision_data.attributes],
+            "image_analysis": vision_data.image_analysis.model_dump(),
+        }
+
+    @staticmethod
     def _build_prompt(title: str, vision_data: VisionResponse) -> str:
         return (
-            "You are a product normalization agent. Return only valid JSON with keys "
+            "You are a senior ecommerce catalog normalization agent. Return only valid JSON with keys "
             "normalized_title, category, product_type, product_summary, features, attributes. "
             "features must be an array of strings. attributes must be an object of string keys and values.\n"
+            "Write customer-facing product data, not internal notes. Avoid mentioning AI, confidence, or normalization.\n"
             f"Input title: {title}\n"
             f"Vision product_type: {vision_data.product_type}\n"
             f"Vision confidence: {vision_data.confidence}\n"
             f"Vision attributes: {[item.model_dump() for item in vision_data.attributes]}\n"
             f"Image analysis: {vision_data.image_analysis.model_dump()}\n"
         )
-
-    @staticmethod
-    def _normalize_title(title: str) -> str:
-        cleaned = re.sub(r"\s+", " ", title.strip())
-        return cleaned.title()
 
     @staticmethod
     def _merge_attributes(vision_data: VisionResponse) -> dict[str, str]:
@@ -79,47 +142,49 @@ class CoreAgent:
         return merged
 
     @staticmethod
-    def _build_category(product_type: str) -> str:
-        if product_type == "running shoes":
-            return "Footwear"
-        if product_type == "hoodie":
-            return "Apparel"
-        if product_type == "office chair":
-            return "Furniture"
-        if product_type == "water bottle":
-            return "Hydration"
-        return "General Merchandise"
-
-    @staticmethod
     def _build_features(
         normalized_title: str,
         attributes: dict[str, str],
         vision_data: VisionResponse,
     ) -> list[str]:
-        features = [f"Product type: {vision_data.product_type}"]
-        if "material" in attributes:
-            features.append(f"Material: {attributes['material']}")
-        if "color" in attributes:
-            features.append(f"Primary color: {attributes['color']}")
-        features.append(f"Visual style: {attributes.get('style', 'standard')}")
-        if normalized_title.lower() not in vision_data.product_type:
-            features.append(f"Source title preserved: {normalized_title}")
-        return features
+        features = []
+        material = attributes.get("material")
+        color = attributes.get("color")
+        style = attributes.get("style")
+        if material:
+            features.append(f"Crafted with a {material} finish for everyday durability.")
+        if color:
+            features.append(f"Presented in a {color} colorway for a clear merchandising identity.")
+        features.append(f"Designed as a {vision_data.product_type} with a versatile, easy-to-list profile.")
+        if style:
+            features.append(f"Visual styling leans {style}, making it suitable for modern marketplace presentation.")
+        keywords = title_keywords(normalized_title)
+        if keywords:
+            features.append(f"Search-relevant title terms include {' '.join(keywords[:3])}.")
+        return unique_strings(features, limit=6)
 
     @staticmethod
     def _build_summary(
         normalized_title: str,
         category: str,
         attributes: dict[str, str],
+        product_type: str,
     ) -> str:
         descriptive_bits = [value for key, value in attributes.items() if key in {"color", "material", "style"}]
-        descriptor = ", ".join(descriptive_bits) if descriptive_bits else "general use"
-        return f"{normalized_title} is a {category.lower()} product with {descriptor} characteristics."
+        descriptor = ", ".join(descriptive_bits[:3])
+        parts = [
+            f"{normalized_title} is positioned within {category.lower()}",
+            f"built around a {product_type} use case",
+            f"with {descriptor} cues" if descriptor else "with a broadly merchandisable presentation",
+        ]
+        return sentence_case_summary(parts)
 
     @staticmethod
     def _ensure_string_list(value: object, fallback: list[str]) -> list[str]:
         if isinstance(value, list) and all(isinstance(item, str) for item in value):
-            return value
+            normalized = unique_strings(value, limit=8)
+            if normalized:
+                return normalized
         return fallback
 
     @staticmethod
@@ -127,5 +192,5 @@ class CoreAgent:
         if isinstance(value, dict) and all(
             isinstance(key, str) and isinstance(item, str) for key, item in value.items()
         ):
-            return value
+            return {str(key).strip().lower(): str(item).strip() for key, item in value.items() if str(key).strip() and str(item).strip()}
         return fallback

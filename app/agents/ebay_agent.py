@@ -1,33 +1,64 @@
 from __future__ import annotations
 
 from app.schemas.response import CoreProductResponse, EbayResponse
+from app.services.openai_service import OpenAIService, OpenAIServiceError
 from app.services.ollama_service import OllamaService, OllamaServiceError
 
 
 class EbayAgent:
-    def __init__(self, ollama_service: OllamaService | None = None) -> None:
+    _SCHEMA = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["title", "item_specifics", "condition", "listing_notes"],
+        "properties": {
+            "title": {"type": "string"},
+            "item_specifics": {"type": "object", "additionalProperties": {"type": "string"}},
+            "condition": {"type": "string"},
+            "listing_notes": {"type": "string"},
+        },
+    }
+
+    def __init__(
+        self,
+        ollama_service: OllamaService | None = None,
+        openai_service: OpenAIService | None = None,
+    ) -> None:
         self.ollama_service = ollama_service
+        self.openai_service = openai_service
 
     async def process(self, core_data: CoreProductResponse) -> EbayResponse:
         fallback = EbayResponse(
             title=self._build_title(core_data)[:80],
             item_specifics={
-                "Brand": "Unbranded",
+                "Brand": core_data.attributes.get("brand", "Unbranded"),
                 "Type": core_data.product_type.title(),
                 **{key.title(): value.title() for key, value in core_data.attributes.items()},
             },
             condition=self._map_condition(core_data),
-            listing_notes=(
-                f"Normalized from source title '{core_data.source_title}' "
-                f"with confidence {core_data.vision_confidence:.2f}."
-            ),
+            listing_notes=f"{core_data.product_summary} Suitable for a clean eBay listing with clear item specifics.",
         )
+        if self.openai_service is not None:
+            try:
+                data = await self.openai_service.generate_structured_output(
+                    system_prompt=(
+                        "You are a senior eBay listing specialist. Return concise, sale-ready listing data. "
+                        "Do not mention AI, normalization, or confidence scores."
+                    ),
+                    user_payload={"core_product": core_data.model_dump()},
+                    schema_name="ebay_listing",
+                    schema=self._SCHEMA,
+                )
+                return self._from_data(data, fallback)
+            except OpenAIServiceError:
+                pass
+
         if self.ollama_service is None:
             return fallback
 
         prompt = (
-            "You are an eBay listing agent. Return only valid JSON with keys title, "
+            "You are a senior eBay listing agent. Return only valid JSON with keys title, "
             "item_specifics, condition, listing_notes.\n"
+            "Do not mention AI, confidence, normalization, or internal processing.\n"
             f"Core product: {core_data.model_dump()}\n"
         )
         try:
@@ -35,7 +66,9 @@ class EbayAgent:
         except OllamaServiceError:
             return fallback
 
-        data = result.parsed
+        return self._from_data(result.parsed, fallback)
+
+    def _from_data(self, data: dict[str, object], fallback: EbayResponse) -> EbayResponse:
         specifics = data.get("item_specifics")
         return EbayResponse(
             title=str(data.get("title", fallback.title))[:80],
@@ -49,7 +82,6 @@ class EbayAgent:
         parts = [
             core_data.normalized_title,
             core_data.attributes.get("color", "").title(),
-            core_data.product_type.title(),
         ]
         return " - ".join(part for part in parts if part)
 

@@ -42,3 +42,6 @@ async def test_generate_endpoint_returns_structured_response() -> None:
     assert "amazon" in body
     assert "tiktok" in body
     assert "ebay" in body
+    assert "images" in body
+    assert "source" in body["images"]
+    assert "amazon" in body["images"]

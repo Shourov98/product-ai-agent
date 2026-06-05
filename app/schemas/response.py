@@ -59,8 +59,41 @@ class EbayResponse(BaseModel):
     listing_notes: str
 
 
+class ImageValidationResponse(BaseModel):
+    passed: bool
+    width: int | None = None
+    height: int | None = None
+    format: str | None = None
+    has_alpha: bool | None = None
+    file_size_bytes: int = Field(ge=0)
+    expected_width: int | None = None
+    expected_height: int | None = None
+    expected_background: str
+    errors: list[str]
+    mime_type: str
+
+
+class ImageVariantResponse(BaseModel):
+    marketplace: str
+    relative_path: str
+    absolute_path: str
+    prompt: str
+    generation_mode: str
+    mime_type: str
+    validation: ImageValidationResponse
+
+
+class GeneratedImagesResponse(BaseModel):
+    source: ImageVariantResponse
+    transparent_cutout: ImageVariantResponse | None = None
+    amazon: ImageVariantResponse
+    ebay: ImageVariantResponse
+    tiktok: ImageVariantResponse
+
+
 class ProductPipelineResponse(BaseModel):
     core: CoreProductResponse
     amazon: AmazonResponse
     tiktok: TikTokResponse
     ebay: EbayResponse
+    images: GeneratedImagesResponse

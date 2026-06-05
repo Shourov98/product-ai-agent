@@ -22,3 +22,9 @@ class OutputService:
         path = run_dir / f"{name}.json"
         with path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, ensure_ascii=True)
+
+    def save_binary(self, run_dir: Path, relative_path: str, payload: bytes) -> Path:
+        path = run_dir / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        return path

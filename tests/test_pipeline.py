@@ -16,7 +16,10 @@ def test_pipeline_returns_all_marketplace_outputs() -> None:
 
     result = asyncio.run(pipeline.run(payload, "Urban Carry Bag"))
 
-    assert result.core.category == "General Merchandise"
+    assert result.core.category == "Travel Bags & Luggage"
+    assert result.core.product_summary
     assert result.amazon.title
     assert result.tiktok.hashtags
     assert result.ebay.condition in {"New", "New other"}
+    assert result.images.source.relative_path
+    assert result.images.amazon.validation.file_size_bytes >= 0
