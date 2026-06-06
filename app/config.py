@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 class Settings(BaseModel):

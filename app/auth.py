@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import jwt
 from fastapi import Header, HTTPException, status
-from pymongo import MongoClient
 
 from app.config import get_settings
 
@@ -19,7 +17,15 @@ class AuthenticatedUser:
 def get_optional_current_user(authorization: str | None = Header(default=None)) -> AuthenticatedUser | None:
     settings = get_settings()
     if not settings.auth_enabled:
-      return None
+        return None
+
+    try:
+        import jwt
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="PyJWT is required when authentication is enabled.",
+        ) from exc
 
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
@@ -66,6 +72,14 @@ def _validate_user_status(user_id: str) -> None:
     settings = get_settings()
     if not settings.mongodb_enabled or not settings.mongodb_uri:
         return
+
+    try:
+        from pymongo import MongoClient
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="pymongo is required when MongoDB-backed auth validation is enabled.",
+        ) from exc
 
     client = MongoClient(settings.mongodb_uri)
     try:

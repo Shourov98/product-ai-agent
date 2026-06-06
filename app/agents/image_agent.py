@@ -58,7 +58,7 @@ class ImageAgent:
             ),
         },
         "shopify": {
-            "size": "1536x1536",
+            "size": "1024x1024",
             "background": "opaque",
             "prompt_prefix": (
                 "Create a polished Shopify storefront hero image by changing only the background and scene styling. "
