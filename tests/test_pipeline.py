@@ -21,5 +21,8 @@ def test_pipeline_returns_all_marketplace_outputs() -> None:
     assert result.amazon.title
     assert result.tiktok.hashtags
     assert result.ebay.condition in {"New", "New other"}
+    assert result.shopify.title
+    assert result.shopify.body_html
     assert result.images.source.relative_path
     assert result.images.amazon.validation.file_size_bytes >= 0
+    assert result.images.shopify.validation.file_size_bytes >= 0

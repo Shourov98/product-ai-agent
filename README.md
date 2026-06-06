@@ -58,6 +58,7 @@ The backend now also produces marketplace image variants for:
 - Amazon
 - eBay
 - TikTok
+- Shopify
 
 Each run saves:
 

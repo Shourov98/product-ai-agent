@@ -59,6 +59,15 @@ class EbayResponse(BaseModel):
     listing_notes: str
 
 
+class ShopifyResponse(BaseModel):
+    title: str
+    body_html: str
+    tags: list[str]
+    product_type: str
+    seo_title: str
+    seo_description: str
+
+
 class ImageValidationResponse(BaseModel):
     passed: bool
     width: int | None = None
@@ -89,6 +98,7 @@ class GeneratedImagesResponse(BaseModel):
     amazon: ImageVariantResponse
     ebay: ImageVariantResponse
     tiktok: ImageVariantResponse
+    shopify: ImageVariantResponse
 
 
 class ProductPipelineResponse(BaseModel):
@@ -96,4 +106,48 @@ class ProductPipelineResponse(BaseModel):
     amazon: AmazonResponse
     tiktok: TikTokResponse
     ebay: EbayResponse
+    shopify: ShopifyResponse
     images: GeneratedImagesResponse
+
+
+MarketplaceLiteral = Literal["amazon", "ebay", "tiktok", "shopify"]
+VariantTypeLiteral = Literal["size", "color"]
+ProductStatusLiteral = Literal["draft", "published"]
+
+
+class ProductVariantResponse(BaseModel):
+    id: str
+    marketplace: MarketplaceLiteral
+    variant_type: VariantTypeLiteral
+    name: str
+    value: str
+    image: ImageVariantResponse | None = None
+    created_at: str
+
+
+class MarketplaceVariantsResponse(BaseModel):
+    amazon: list[ProductVariantResponse] = Field(default_factory=list)
+    ebay: list[ProductVariantResponse] = Field(default_factory=list)
+    tiktok: list[ProductVariantResponse] = Field(default_factory=list)
+    shopify: list[ProductVariantResponse] = Field(default_factory=list)
+
+
+class ProductRecordResponse(BaseModel):
+    id: str
+    status: ProductStatusLiteral
+    created_at: str
+    updated_at: str
+    run_id: str
+    product: ProductPipelineResponse
+    variants: MarketplaceVariantsResponse
+
+
+class ProductListItemResponse(BaseModel):
+    id: str
+    status: ProductStatusLiteral
+    created_at: str
+    updated_at: str
+    normalized_title: str
+    category: str
+    product_type: str
+    preview_image_path: str
