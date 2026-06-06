@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.auth import AuthenticatedUser
 from app.agents.amazon_agent import AmazonAgent
 from app.agents.ebay_agent import EbayAgent
 from app.agents.image_agent import ImageAgent
@@ -28,6 +29,7 @@ from app.schemas.response import (
     TikTokResponse,
 )
 from app.services.image_service import ImagePayload
+from app.services.mongo_product_store import MongoProductStore
 from app.services.output_service import OutputService
 from app.services.product_store import ProductStore
 
@@ -35,8 +37,17 @@ from app.services.product_store import ProductStore
 class ProductService:
     def __init__(self) -> None:
         settings = get_settings()
+        self.settings = settings
         self.pipeline = ProductPipeline()
-        self.store = ProductStore(settings.output_dir)
+        self.store = (
+            MongoProductStore(
+                mongodb_uri=settings.mongodb_uri,
+                db_name=settings.mongodb_db_name,
+                products_collection=settings.mongodb_products_collection,
+            )
+            if settings.mongodb_enabled and settings.mongodb_uri
+            else ProductStore(settings.output_dir)
+        )
         self.output_service = OutputService(settings.output_dir)
         self.image_agent = ImageAgent(self.pipeline.openai_service)
         self.amazon_agent = AmazonAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
@@ -44,7 +55,12 @@ class ProductService:
         self.tiktok_agent = TikTokAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
         self.shopify_agent = ShopifyAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
 
-    async def generate_and_store(self, image: ImagePayload, title: str) -> ProductRecordResponse:
+    async def generate_and_store(
+        self,
+        image: ImagePayload,
+        title: str,
+        current_user: AuthenticatedUser | None = None,
+    ) -> ProductRecordResponse:
         result = await self.pipeline.run_with_context(image, title)
         record = ProductRecordResponse(
             id=self._new_id(),
@@ -55,20 +71,25 @@ class ProductService:
             product=result.response,
             variants=MarketplaceVariantsResponse(),
         )
-        self.store.save(record)
+        self.store.save(record, user_id=current_user.user_id if current_user is not None else None)
         return record
 
-    def list_products(self) -> list[ProductListItemResponse]:
-        return self.store.list()
+    def list_products(self, current_user: AuthenticatedUser | None = None) -> list[ProductListItemResponse]:
+        return self.store.list(user_id=current_user.user_id if current_user is not None else None)
 
-    def get_product(self, product_id: str) -> ProductRecordResponse:
-        record = self.store.get(product_id)
+    def get_product(self, product_id: str, current_user: AuthenticatedUser | None = None) -> ProductRecordResponse:
+        record = self.store.get(product_id, user_id=current_user.user_id if current_user is not None else None)
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found.")
         return record
 
-    def update_product(self, product_id: str, payload: ProductUpdateRequest) -> ProductRecordResponse:
-        record = self.get_product(product_id)
+    def update_product(
+        self,
+        product_id: str,
+        payload: ProductUpdateRequest,
+        current_user: AuthenticatedUser | None = None,
+    ) -> ProductRecordResponse:
+        record = self.get_product(product_id, current_user=current_user)
         product = record.product
 
         if payload.core is not None:
@@ -108,15 +129,16 @@ class ProductService:
                 "updated_at": self._timestamp(),
             }
         )
-        self.store.save(updated)
+        self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
     async def regenerate_marketplace(
         self,
         product_id: str,
         marketplace: MarketplaceLiteral,
+        current_user: AuthenticatedUser | None = None,
     ) -> ProductRecordResponse:
-        record = self.get_product(product_id)
+        record = self.get_product(product_id, current_user=current_user)
         source_image = self._load_source_image(record)
 
         core = record.product.core
@@ -157,7 +179,7 @@ class ProductService:
             images=images,
         )
         updated = record.model_copy(update={"product": product, "updated_at": self._timestamp()})
-        self.store.save(updated)
+        self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
     def add_size_variant(
@@ -165,8 +187,9 @@ class ProductService:
         product_id: str,
         marketplace: MarketplaceLiteral,
         payload: VariantCreateRequest,
+        current_user: AuthenticatedUser | None = None,
     ) -> ProductRecordResponse:
-        record = self.get_product(product_id)
+        record = self.get_product(product_id, current_user=current_user)
         variant = ProductVariantResponse(
             id=self._new_id(),
             marketplace=marketplace,
@@ -177,7 +200,7 @@ class ProductService:
             created_at=self._timestamp(),
         )
         updated = self._append_variant(record, marketplace, variant)
-        self.store.save(updated)
+        self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
     def add_color_variant(
@@ -185,8 +208,9 @@ class ProductService:
         product_id: str,
         marketplace: MarketplaceLiteral,
         payload: VariantCreateRequest,
+        current_user: AuthenticatedUser | None = None,
     ) -> ProductRecordResponse:
-        record = self.get_product(product_id)
+        record = self.get_product(product_id, current_user=current_user)
         source_image = self._load_source_image(record)
         product_dir = self.store.get_product_dir(record.id)
         image_asset = self.image_agent.build_color_variant_asset(
@@ -208,7 +232,7 @@ class ProductService:
             created_at=self._timestamp(),
         )
         updated = self._append_variant(record, marketplace, variant)
-        self.store.save(updated)
+        self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
     def _append_variant(

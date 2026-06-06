@@ -12,20 +12,23 @@ class ProductStore:
         self.base_dir = Path(base_dir).resolve()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    def save(self, record: ProductRecordResponse) -> None:
+    def save(self, record: ProductRecordResponse, *, user_id: str | None = None) -> None:
+        del user_id
         run_dir = (self.base_dir / record.run_id).resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
         path = run_dir / "record.json"
         with path.open("w", encoding="utf-8") as handle:
             json.dump(record.model_dump(mode="json"), handle, indent=2, ensure_ascii=True)
 
-    def get(self, product_id: str) -> ProductRecordResponse | None:
+    def get(self, product_id: str, *, user_id: str | None = None) -> ProductRecordResponse | None:
+        del user_id
         path = self._find_record_path(product_id)
         if path is None:
             return None
         return self._load_record(path)
 
-    def list(self) -> list[ProductListItemResponse]:
+    def list(self, *, user_id: str | None = None) -> list[ProductListItemResponse]:
+        del user_id
         records: list[ProductListItemResponse] = []
         for path in sorted(self.base_dir.glob("*/record.json")):
             record = self._load_record(path)

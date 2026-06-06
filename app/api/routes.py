@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
+from app.auth import AuthenticatedUser, get_optional_current_user
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
 from app.schemas.request import MarketplaceRequestLiteral, ProductUpdateRequest, VariantCreateRequest
@@ -59,6 +60,7 @@ async def generate_product_listing(
 async def generate_and_create_product(
     title: str = Form(...),
     image: UploadFile = File(...),
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
 ) -> ProductRecordResponse:
     settings = get_settings()
     content = await image.read()
@@ -81,7 +83,7 @@ async def generate_and_create_product(
         data=content,
     )
     service = ProductService()
-    return await service.generate_and_store(payload, title)
+    return await service.generate_and_store(payload, title, current_user=current_user)
 
 
 @router.get(
@@ -89,9 +91,11 @@ async def generate_and_create_product(
     response_model=list[ProductListItemResponse],
     status_code=status.HTTP_200_OK,
 )
-async def list_products() -> list[ProductListItemResponse]:
+async def list_products(
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> list[ProductListItemResponse]:
     service = ProductService()
-    return service.list_products()
+    return service.list_products(current_user=current_user)
 
 
 @router.get(
@@ -99,9 +103,12 @@ async def list_products() -> list[ProductListItemResponse]:
     response_model=ProductRecordResponse,
     status_code=status.HTTP_200_OK,
 )
-async def get_product(product_id: str) -> ProductRecordResponse:
+async def get_product(
+    product_id: str,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ProductRecordResponse:
     service = ProductService()
-    return service.get_product(product_id)
+    return service.get_product(product_id, current_user=current_user)
 
 
 @router.patch(
@@ -112,9 +119,10 @@ async def get_product(product_id: str) -> ProductRecordResponse:
 async def update_product(
     product_id: str,
     payload: ProductUpdateRequest,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
 ) -> ProductRecordResponse:
     service = ProductService()
-    return service.update_product(product_id, payload)
+    return service.update_product(product_id, payload, current_user=current_user)
 
 
 @router.post(
@@ -126,9 +134,10 @@ async def add_size_variant(
     product_id: str,
     marketplace: MarketplaceRequestLiteral,
     payload: VariantCreateRequest,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
 ) -> ProductRecordResponse:
     service = ProductService()
-    return service.add_size_variant(product_id, marketplace, payload)
+    return service.add_size_variant(product_id, marketplace, payload, current_user=current_user)
 
 
 @router.post(
@@ -140,9 +149,10 @@ async def add_color_variant(
     product_id: str,
     marketplace: MarketplaceRequestLiteral,
     payload: VariantCreateRequest,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
 ) -> ProductRecordResponse:
     service = ProductService()
-    return service.add_color_variant(product_id, marketplace, payload)
+    return service.add_color_variant(product_id, marketplace, payload, current_user=current_user)
 
 
 @router.post(
@@ -153,6 +163,7 @@ async def add_color_variant(
 async def regenerate_marketplace(
     product_id: str,
     marketplace: MarketplaceRequestLiteral,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
 ) -> ProductRecordResponse:
     service = ProductService()
-    return await service.regenerate_marketplace(product_id, marketplace)
+    return await service.regenerate_marketplace(product_id, marketplace, current_user=current_user)
