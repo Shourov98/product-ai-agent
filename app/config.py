@@ -18,6 +18,7 @@ class Settings(BaseModel):
     supported_marketplaces: tuple[str, ...] = ("amazon", "tiktok", "ebay", "shopify")
     output_dir: str = "output"
     product_store_dir: str = "output/products"
+    local_output_enabled: bool = False
     auth_enabled: bool = False
     jwt_access_secret: str | None = None
     mongodb_enabled: bool = False
@@ -33,9 +34,16 @@ class Settings(BaseModel):
     openai_api_key: str | None = None
     openai_model: str = "gpt-5"
     openai_image_model: str = "gpt-image-1"
+    cloudinary_cloud_name: str | None = None
+    cloudinary_api_key: str | None = None
+    cloudinary_api_secret: str | None = None
+    cloudinary_folder: str = "product-ai-agent"
+    cloudinary_secure: bool = True
 
 
 def get_settings() -> Settings:
+    mongodb_uri = os.getenv("MONGODB_URI")
+    mongodb_enabled_default = "true" if mongodb_uri else "false"
     return Settings(
         debug=os.getenv("DEBUG", "false").lower() == "true",
         max_upload_size_bytes=int(
@@ -43,10 +51,11 @@ def get_settings() -> Settings:
         ),
         output_dir=os.getenv("OUTPUT_DIR", "output"),
         product_store_dir=os.getenv("PRODUCT_STORE_DIR", "output/products"),
+        local_output_enabled=os.getenv("LOCAL_OUTPUT_ENABLED", "false").lower() == "true",
         auth_enabled=os.getenv("AUTH_ENABLED", "false").lower() == "true",
         jwt_access_secret=os.getenv("JWT_ACCESS_SECRET"),
-        mongodb_enabled=os.getenv("MONGODB_ENABLED", "false").lower() == "true",
-        mongodb_uri=os.getenv("MONGODB_URI"),
+        mongodb_enabled=os.getenv("MONGODB_ENABLED", mongodb_enabled_default).lower() == "true",
+        mongodb_uri=mongodb_uri,
         mongodb_db_name=os.getenv("MONGODB_DB_NAME", "product_ai_agent"),
         mongodb_products_collection=os.getenv("MONGODB_PRODUCTS_COLLECTION", "products"),
         mongodb_runs_collection=os.getenv("MONGODB_RUNS_COLLECTION", "product_runs"),
@@ -58,4 +67,9 @@ def get_settings() -> Settings:
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5"),
         openai_image_model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1"),
+        cloudinary_cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+        cloudinary_api_key=os.getenv("CLOUDINARY_API_KEY"),
+        cloudinary_api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+        cloudinary_folder=os.getenv("CLOUDINARY_FOLDER", "product-ai-agent"),
+        cloudinary_secure=os.getenv("CLOUDINARY_SECURE", "true").lower() == "true",
     )

@@ -14,6 +14,7 @@ from app.agents.vision_agent import VisionAgent
 from app.config import get_settings
 from app.schemas.response import ProductPipelineResponse
 from app.services.image_service import ImagePayload
+from app.services.cloudinary_service import CloudinaryService
 from app.services.openai_service import OpenAIService
 from app.services.ollama_service import OllamaService
 from app.services.output_service import OutputService
@@ -37,7 +38,17 @@ class ProductPipeline:
         shopify: ShopifyAgent | None = None,
     ) -> None:
         settings = get_settings()
-        self.output_service = OutputService(settings.output_dir)
+        self.output_service = OutputService(
+            settings.output_dir,
+            cloudinary_service=CloudinaryService(
+                cloud_name=settings.cloudinary_cloud_name,
+                api_key=settings.cloudinary_api_key,
+                api_secret=settings.cloudinary_api_secret,
+                folder=settings.cloudinary_folder,
+                secure=settings.cloudinary_secure,
+            ),
+            local_output_enabled=settings.local_output_enabled,
+        )
         self.ollama_service = OllamaService(
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,

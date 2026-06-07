@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.request import urlopen
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -28,6 +29,7 @@ from app.schemas.response import (
     ShopifyResponse,
     TikTokResponse,
 )
+from app.services.cloudinary_service import CloudinaryService
 from app.services.image_service import ImagePayload
 from app.services.mongo_product_store import MongoProductStore
 from app.services.output_service import OutputService
@@ -45,10 +47,20 @@ class ProductService:
                 db_name=settings.mongodb_db_name,
                 products_collection=settings.mongodb_products_collection,
             )
-            if settings.mongodb_enabled and settings.mongodb_uri
+            if settings.mongodb_uri and settings.mongodb_enabled
             else ProductStore(settings.output_dir)
         )
-        self.output_service = OutputService(settings.output_dir)
+        self.output_service = OutputService(
+            settings.output_dir,
+            cloudinary_service=CloudinaryService(
+                cloud_name=settings.cloudinary_cloud_name,
+                api_key=settings.cloudinary_api_key,
+                api_secret=settings.cloudinary_api_secret,
+                folder=settings.cloudinary_folder,
+                secure=settings.cloudinary_secure,
+            ),
+            local_output_enabled=settings.local_output_enabled,
+        )
         self.image_agent = ImageAgent(self.pipeline.openai_service)
         self.amazon_agent = AmazonAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
         self.ebay_agent = EbayAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
@@ -266,6 +278,16 @@ class ProductService:
     @staticmethod
     def _load_source_image(record: ProductRecordResponse) -> ImagePayload:
         source = record.product.images.source
+        if source.absolute_path.startswith("http://") or source.absolute_path.startswith("https://"):
+            with urlopen(source.absolute_path, timeout=30) as response:
+                payload = response.read()
+            filename = Path(source.relative_path or Path(source.absolute_path).name).name
+            return ImagePayload(
+                filename=filename or "source.bin",
+                content_type=source.mime_type,
+                data=payload,
+            )
+
         path = Path(source.absolute_path)
         if not path.exists():
             raise HTTPException(

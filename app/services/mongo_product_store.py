@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from pymongo import DESCENDING, MongoClient
@@ -60,3 +61,8 @@ class MongoProductStore:
                 )
             )
         return records
+
+    def get_product_dir(self, product_id: str) -> Path:
+        payload = self.collection.find_one({"id": product_id}, {"run_id": 1})
+        run_id = str(payload.get("run_id", product_id)) if payload else product_id
+        return Path("/tmp") / run_id

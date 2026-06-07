@@ -4,6 +4,7 @@ import colorsys
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
+from urllib.request import urlopen
 
 from app.schemas.response import (
     AmazonResponse,
@@ -242,7 +243,7 @@ class ImageAgent:
                 color_name=color_name,
                 background=background,
             )
-            absolute_path = output_service.save_binary(run_dir, relative_path, image_bytes)
+            absolute_path = output_service.save_binary(run_dir, relative_path, image_bytes, mime_type="image/png")
             validation = self._validate_bytes(
                 image_bytes,
                 mime_type="image/png",
@@ -260,7 +261,7 @@ class ImageAgent:
                 validation=validation,
             )
         except Exception as exc:
-            absolute_path = output_service.save_binary(run_dir, relative_path, source.data)
+            absolute_path = output_service.save_binary(run_dir, relative_path, source.data, mime_type=source.content_type)
             validation = self._validate_bytes(
                 source.data,
                 mime_type=source.content_type,
@@ -281,7 +282,7 @@ class ImageAgent:
 
     def _save_source(self, *, image: ImagePayload, run_dir: Path, output_service) -> ImageVariantResponse:
         relative_path = f"images/source-{image.filename}"
-        absolute_path = output_service.save_binary(run_dir, relative_path, image.data)
+        absolute_path = output_service.save_binary(run_dir, relative_path, image.data, mime_type=image.content_type)
         validation = self._validate_bytes(
             image.data,
             mime_type=image.content_type,
@@ -328,7 +329,7 @@ class ImageAgent:
                 size="1024x1024",
                 background="transparent",
             )
-            absolute_path = output_service.save_binary(run_dir, relative_path, image_bytes)
+            absolute_path = output_service.save_binary(run_dir, relative_path, image_bytes, mime_type="image/png")
             validation = self._validate_bytes(
                 image_bytes,
                 mime_type="image/png",
@@ -373,7 +374,7 @@ class ImageAgent:
         expected_height = self._size_to_height(profile["size"])
 
         if cutout_path is None:
-            absolute_path = output_service.save_binary(run_dir, relative_path, source.data)
+            absolute_path = output_service.save_binary(run_dir, relative_path, source.data, mime_type=source.content_type)
             validation = self._validate_bytes(
                 source.data,
                 mime_type=source.content_type,
@@ -399,7 +400,7 @@ class ImageAgent:
                 height=expected_height,
                 background=(255, 255, 255, 255),
             )
-            absolute_path = output_service.save_binary(run_dir, relative_path, image_bytes)
+            absolute_path = output_service.save_binary(run_dir, relative_path, image_bytes, mime_type="image/png")
             validation = self._validate_bytes(
                 image_bytes,
                 mime_type="image/png",
@@ -417,7 +418,7 @@ class ImageAgent:
                 validation=validation,
             )
         except Exception as exc:
-            absolute_path = output_service.save_binary(run_dir, relative_path, source.data)
+            absolute_path = output_service.save_binary(run_dir, relative_path, source.data, mime_type=source.content_type)
             validation = self._validate_bytes(
                 source.data,
                 mime_type=source.content_type,
@@ -459,7 +460,7 @@ class ImageAgent:
         relative_path = f"images/{marketplace}.png"
 
         if self.openai_service is None or not self.openai_service.enabled:
-            absolute_path = output_service.save_binary(run_dir, relative_path, source.data)
+            absolute_path = output_service.save_binary(run_dir, relative_path, source.data, mime_type=source.content_type)
             validation = self._validate_bytes(
                 source.data,
                 mime_type=source.content_type,
@@ -479,17 +480,16 @@ class ImageAgent:
             )
 
         try:
-            with open(base_image_path, "rb") as handle:
-                base_bytes = handle.read()
+            base_bytes = self._read_bytes_from_reference(base_image_path)
             image_bytes = await self.openai_service.edit_image(
                 prompt=prompt,
                 image_bytes=base_bytes,
-                filename=Path(base_image_path).name,
+                filename=self._filename_from_reference(base_image_path),
                 mime_type="image/png" if base_image_path.endswith(".png") else source.content_type,
                 size=profile["size"],
                 background=profile["background"],
             )
-            absolute_path = output_service.save_binary(run_dir, relative_path, image_bytes)
+            absolute_path = output_service.save_binary(run_dir, relative_path, image_bytes, mime_type="image/png")
             validation = self._validate_bytes(
                 image_bytes,
                 mime_type="image/png",
@@ -507,7 +507,7 @@ class ImageAgent:
                 validation=validation,
             )
         except OpenAIServiceError as exc:
-            absolute_path = output_service.save_binary(run_dir, relative_path, source.data)
+            absolute_path = output_service.save_binary(run_dir, relative_path, source.data, mime_type=source.content_type)
             validation = self._validate_bytes(
                 source.data,
                 mime_type=source.content_type,
@@ -545,7 +545,8 @@ class ImageAgent:
         if Image is None:
             raise RuntimeError("Pillow is not installed.")
 
-        with Image.open(cutout_path) as cutout:
+        cutout_bytes = self._read_bytes_from_reference(cutout_path)
+        with Image.open(BytesIO(cutout_bytes)) as cutout:
             cutout_rgba = cutout.convert("RGBA")
             scale = min((width * 0.88) / cutout_rgba.width, (height * 0.88) / cutout_rgba.height)
             resized = cutout_rgba.resize(
@@ -574,7 +575,8 @@ class ImageAgent:
             raise RuntimeError("Pillow is not installed.")
 
         tone = self._color_name_to_rgb(color_name)
-        with Image.open(cutout_path) as cutout:
+        cutout_bytes = self._read_bytes_from_reference(cutout_path)
+        with Image.open(BytesIO(cutout_bytes)) as cutout:
             cutout_rgba = cutout.convert("RGBA")
             scale = min((width * 0.78) / cutout_rgba.width, (height * 0.78) / cutout_rgba.height)
             resized = cutout_rgba.resize(
@@ -664,6 +666,17 @@ class ImageAgent:
         if "orange" in lowered:
             return (234, 88, 12)
         return (71, 85, 105)
+
+    @staticmethod
+    def _read_bytes_from_reference(reference: str) -> bytes:
+        if reference.startswith("http://") or reference.startswith("https://"):
+            with urlopen(reference, timeout=30) as response:
+                return response.read()
+        return Path(reference).read_bytes()
+
+    @staticmethod
+    def _filename_from_reference(reference: str) -> str:
+        return Path(reference.split("?", maxsplit=1)[0]).name or "image.png"
 
     @staticmethod
     def _background_for_marketplace(
