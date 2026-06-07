@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.schemas.response import CoreProductResponse, ShopifyResponse
+from app.schemas.response import CoreProductResponse, MarketplacePricingResponse, MarketplaceResearchResponse, SeoInsightsResponse, ShopifyResponse
 from app.services.openai_service import OpenAIService, OpenAIServiceError
 from app.services.ollama_service import OllamaService, OllamaServiceError
 from app.utils.product_text import title_keywords, unique_strings
@@ -29,14 +29,21 @@ class ShopifyAgent:
         self.ollama_service = ollama_service
         self.openai_service = openai_service
 
-    async def process(self, core_data: CoreProductResponse) -> ShopifyResponse:
+    async def process(
+        self,
+        core_data: CoreProductResponse,
+        *,
+        research: MarketplaceResearchResponse | None = None,
+        seo: SeoInsightsResponse | None = None,
+        pricing: MarketplacePricingResponse | None = None,
+    ) -> ShopifyResponse:
         fallback = ShopifyResponse(
-            title=self._build_title(core_data),
+            title=self._build_title(core_data, seo),
             body_html=self._build_body_html(core_data),
-            tags=self._build_tags(core_data),
+            tags=self._build_tags(core_data, research, seo),
             product_type=core_data.product_type.title(),
-            seo_title=self._build_seo_title(core_data),
-            seo_description=self._build_seo_description(core_data),
+            seo_title=self._build_seo_title(core_data, seo),
+            seo_description=self._build_seo_description(core_data, pricing),
         )
 
         if self.openai_service is not None:
@@ -47,7 +54,12 @@ class ShopifyAgent:
                         "Produce storefront-ready product content that feels polished, concise, and conversion-oriented. "
                         "Do not mention AI, confidence, normalization, or internal processing."
                     ),
-                    user_payload={"core_product": core_data.model_dump()},
+                    user_payload={
+                        "core_product": core_data.model_dump(),
+                        "research": research.model_dump() if research is not None else None,
+                        "seo": seo.model_dump() if seo is not None else None,
+                        "pricing": pricing.model_dump() if pricing is not None else None,
+                    },
                     schema_name="shopify_listing",
                     schema=self._SCHEMA,
                 )
@@ -82,14 +94,17 @@ class ShopifyAgent:
         )
 
     @staticmethod
-    def _build_title(core_data: CoreProductResponse) -> str:
+    def _build_title(core_data: CoreProductResponse, seo: SeoInsightsResponse | None) -> str:
         color = core_data.attributes.get("color")
         material = core_data.attributes.get("material")
+        keyword = seo.marketplace_keywords.get("shopify", [None])[0] if seo is not None else None
         parts = [core_data.normalized_title]
         if color:
             parts.append(color.title())
         if material:
             parts.append(material.title())
+        if keyword:
+            parts.append(keyword.title())
         return " | ".join(parts[:3])[:160]
 
     @staticmethod
@@ -98,22 +113,32 @@ class ShopifyAgent:
         return f"<p>{core_data.product_summary}</p><ul>{bullets}</ul>"
 
     @staticmethod
-    def _build_tags(core_data: CoreProductResponse) -> list[str]:
+    def _build_tags(
+        core_data: CoreProductResponse,
+        research: MarketplaceResearchResponse | None,
+        seo: SeoInsightsResponse | None,
+    ) -> list[str]:
         raw_tags = [
             core_data.product_type,
             core_data.category,
             *core_data.attributes.values(),
             *title_keywords(core_data.normalized_title),
         ]
+        if research is not None:
+            raw_tags.extend(research.keyword_signals[:4])
+        if seo is not None:
+            raw_tags.extend(seo.marketplace_keywords.get("shopify", []))
         return unique_strings(raw_tags, limit=12)
 
     @staticmethod
-    def _build_seo_title(core_data: CoreProductResponse) -> str:
-        return f"{core_data.normalized_title} | {core_data.category}"[:70]
+    def _build_seo_title(core_data: CoreProductResponse, seo: SeoInsightsResponse | None) -> str:
+        extra = seo.primary_keywords[0].title() if seo is not None and seo.primary_keywords else core_data.category
+        return f"{core_data.normalized_title} | {extra}"[:70]
 
     @staticmethod
-    def _build_seo_description(core_data: CoreProductResponse) -> str:
-        return f"{core_data.product_summary} Explore features, materials, and product details."[:180]
+    def _build_seo_description(core_data: CoreProductResponse, pricing: MarketplacePricingResponse | None) -> str:
+        pricing_line = f" Positioned at ${pricing.recommended:.2f} for a {pricing.strategy} offer." if pricing is not None else ""
+        return f"{core_data.product_summary} Explore features, materials, and product details.{pricing_line}"[:180]
 
     @staticmethod
     def _coerce_list(value: object, fallback: list[str]) -> list[str]:

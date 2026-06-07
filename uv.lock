@@ -347,6 +347,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "cloudinary" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "openai" },
     { name = "pillow" },
     { name = "pydantic" },
@@ -359,7 +360,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
 ]
 
@@ -367,6 +367,7 @@ dev = [
 requires-dist = [
     { name = "cloudinary", specifier = ">=1.44.1" },
     { name = "fastapi", specifier = ">=0.135.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "openai", specifier = ">=2.26.0" },
     { name = "pillow", specifier = ">=11.2.1" },
     { name = "pydantic", specifier = ">=2.12.5" },
@@ -378,10 +379,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "pytest", specifier = ">=9.0.2" },
-]
+dev = [{ name = "pytest", specifier = ">=9.0.2" }]
 
 [[package]]
 name = "pydantic"

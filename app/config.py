@@ -39,6 +39,14 @@ class Settings(BaseModel):
     cloudinary_api_secret: str | None = None
     cloudinary_folder: str = "product-ai-agent"
     cloudinary_secure: bool = True
+    market_research_realtime_enabled: bool = False
+    ebay_research_enabled: bool = False
+    ebay_client_id: str | None = None
+    ebay_client_secret: str | None = None
+    ebay_marketplace_id: str = "EBAY_US"
+    ebay_api_base_url: str = "https://api.ebay.com"
+    ebay_identity_base_url: str = "https://api.ebay.com"
+    ebay_search_limit: int = 5
 
 
 def get_settings() -> Settings:
@@ -72,4 +80,12 @@ def get_settings() -> Settings:
         cloudinary_api_secret=os.getenv("CLOUDINARY_API_SECRET"),
         cloudinary_folder=os.getenv("CLOUDINARY_FOLDER", "product-ai-agent"),
         cloudinary_secure=os.getenv("CLOUDINARY_SECURE", "true").lower() == "true",
+        market_research_realtime_enabled=os.getenv("MARKET_RESEARCH_REALTIME_ENABLED", "false").lower() == "true",
+        ebay_research_enabled=os.getenv("EBAY_RESEARCH_ENABLED", "false").lower() == "true",
+        ebay_client_id=os.getenv("EBAY_CLIENT_ID"),
+        ebay_client_secret=os.getenv("EBAY_CLIENT_SECRET"),
+        ebay_marketplace_id=os.getenv("EBAY_MARKETPLACE_ID", "EBAY_US"),
+        ebay_api_base_url=os.getenv("EBAY_API_BASE_URL", "https://api.ebay.com"),
+        ebay_identity_base_url=os.getenv("EBAY_IDENTITY_BASE_URL", "https://api.ebay.com"),
+        ebay_search_limit=int(os.getenv("EBAY_SEARCH_LIMIT", "5")),
     )

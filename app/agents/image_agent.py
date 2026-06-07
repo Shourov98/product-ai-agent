@@ -57,6 +57,10 @@ class ImageAgent:
                 "Keep the product as the visual focus. Use a premium styled background with modern lighting, "
                 "but do not add text or logos."
             ),
+            "composite_scale": 0.76,
+            "shadow_opacity": 68,
+            "shadow_blur": 48,
+            "shadow_offset_y": 34,
         },
         "shopify": {
             "size": "1024x1024",
@@ -67,6 +71,10 @@ class ImageAgent:
                 "Do not redesign, recolor, restyle, reshape, or replace the product. "
                 "Use a premium ecommerce background and tasteful lighting, but do not add text, logos, or badges."
             ),
+            "composite_scale": 0.72,
+            "shadow_opacity": 58,
+            "shadow_blur": 34,
+            "shadow_offset_y": 22,
         },
     }
 
@@ -458,43 +466,23 @@ class ImageAgent:
             "Background-only edit requirement: modify the environment/background only while leaving the product unchanged."
         )
         relative_path = f"images/{marketplace}.png"
-
-        if self.openai_service is None or not self.openai_service.enabled:
-            absolute_path = output_service.save_binary(run_dir, relative_path, source.data, mime_type=source.content_type)
-            validation = self._validate_bytes(
-                source.data,
-                mime_type=source.content_type,
-                expected_width=self._size_to_width(profile["size"]),
-                expected_height=self._size_to_height(profile["size"]),
-                background=profile["background"],
-                errors=["OpenAI image generation disabled; saved source image as fallback."],
-            )
-            return ImageVariantResponse(
-                marketplace=marketplace,
-                relative_path=relative_path,
-                absolute_path=str(absolute_path),
-                prompt=prompt,
-                generation_mode="source_passthrough",
-                mime_type=source.content_type,
-                validation=validation,
-            )
+        expected_width = self._size_to_width(profile["size"])
+        expected_height = self._size_to_height(profile["size"])
 
         try:
-            base_bytes = self._read_bytes_from_reference(base_image_path)
-            image_bytes = await self.openai_service.edit_image(
-                prompt=prompt,
-                image_bytes=base_bytes,
-                filename=self._filename_from_reference(base_image_path),
-                mime_type="image/png" if base_image_path.endswith(".png") else source.content_type,
-                size=profile["size"],
-                background=profile["background"],
+            image_bytes = self._compose_marketplace_scene(
+                cutout_path=base_image_path,
+                marketplace=marketplace,
+                width=expected_width,
+                height=expected_height,
+                attributes=attributes,
             )
             absolute_path = output_service.save_binary(run_dir, relative_path, image_bytes, mime_type="image/png")
             validation = self._validate_bytes(
                 image_bytes,
                 mime_type="image/png",
-                expected_width=self._size_to_width(profile["size"]),
-                expected_height=self._size_to_height(profile["size"]),
+                expected_width=expected_width,
+                expected_height=expected_height,
                 background=profile["background"],
             )
             return ImageVariantResponse(
@@ -502,19 +490,19 @@ class ImageAgent:
                 relative_path=relative_path,
                 absolute_path=str(absolute_path),
                 prompt=prompt,
-                generation_mode="edited",
+                generation_mode="local_composite_from_cutout",
                 mime_type="image/png",
                 validation=validation,
             )
-        except OpenAIServiceError as exc:
+        except Exception as exc:
             absolute_path = output_service.save_binary(run_dir, relative_path, source.data, mime_type=source.content_type)
             validation = self._validate_bytes(
                 source.data,
                 mime_type=source.content_type,
-                expected_width=self._size_to_width(profile["size"]),
-                expected_height=self._size_to_height(profile["size"]),
+                expected_width=expected_width,
+                expected_height=expected_height,
                 background=profile["background"],
-                errors=[f"OpenAI image edit failed: {exc}"],
+                errors=[f"Marketplace composite failed: {exc}"],
             )
             return ImageVariantResponse(
                 marketplace=marketplace,
@@ -592,6 +580,49 @@ class ImageAgent:
             canvas.convert("RGBA").save(buffer, format="PNG")
             return buffer.getvalue()
 
+    def _compose_marketplace_scene(
+        self,
+        *,
+        cutout_path: str,
+        marketplace: Literal["tiktok", "shopify"],
+        width: int,
+        height: int,
+        attributes: dict[str, str],
+    ) -> bytes:
+        if Image is None:
+            raise RuntimeError("Pillow is not installed.")
+
+        profile = self._PROFILES[marketplace]
+        background = self._styled_background_for_marketplace(marketplace, attributes)
+        cutout_bytes = self._read_bytes_from_reference(cutout_path)
+
+        with Image.open(BytesIO(cutout_bytes)) as cutout:
+            cutout_rgba = cutout.convert("RGBA")
+            scale_ratio = profile["composite_scale"]
+            scale = min((width * scale_ratio) / cutout_rgba.width, (height * scale_ratio) / cutout_rgba.height)
+            resized = cutout_rgba.resize(
+                (max(1, int(cutout_rgba.width * scale)), max(1, int(cutout_rgba.height * scale))),
+                Image.Resampling.LANCZOS,
+            )
+            canvas = self._build_canvas(width, height, background)
+            self._draw_spotlight(canvas, marketplace)
+            self._draw_ground_shadow(
+                canvas,
+                resized,
+                shadow_opacity=profile["shadow_opacity"],
+                shadow_blur=profile["shadow_blur"],
+                shadow_offset_y=profile["shadow_offset_y"],
+            )
+
+            offset_x = (width - resized.width) // 2
+            headroom_ratio = 0.15 if marketplace == "tiktok" else 0.14
+            offset_y = max(int(height * headroom_ratio), (height - resized.height) // 2 - int(height * 0.03))
+            canvas.alpha_composite(resized, (offset_x, offset_y))
+
+            buffer = BytesIO()
+            canvas.convert("RGBA").save(buffer, format="PNG")
+            return buffer.getvalue()
+
     def _build_canvas(
         self,
         width: int,
@@ -615,6 +646,50 @@ class ImageAgent:
             for x in range(width):
                 canvas.putpixel((x, y), (*row, 255))
         return canvas
+
+    def _draw_spotlight(self, canvas, marketplace: Literal["tiktok", "shopify"]) -> None:
+        if Image is None:
+            raise RuntimeError("Pillow is not installed.")
+
+        overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        width, height = canvas.size
+        center_x = width // 2
+        center_y = int(height * (0.34 if marketplace == "tiktok" else 0.38))
+        radius_x = int(width * 0.34)
+        radius_y = int(height * (0.16 if marketplace == "tiktok" else 0.2))
+        pixels = overlay.load()
+
+        for y in range(height):
+            for x in range(width):
+                dx = (x - center_x) / max(radius_x, 1)
+                dy = (y - center_y) / max(radius_y, 1)
+                distance = dx * dx + dy * dy
+                if distance >= 1:
+                    continue
+                intensity = int((1 - distance) * (36 if marketplace == "tiktok" else 28))
+                pixels[x, y] = (255, 255, 255, intensity)
+
+        canvas.alpha_composite(overlay)
+
+    def _draw_ground_shadow(self, canvas, product, *, shadow_opacity: int, shadow_blur: int, shadow_offset_y: int) -> None:
+        if Image is None:
+            raise RuntimeError("Pillow is not installed.")
+
+        try:
+            from PIL import ImageFilter
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("Pillow ImageFilter is not installed.") from exc
+
+        overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        width, height = canvas.size
+        shadow_width = int(product.width * 0.74)
+        shadow_height = max(18, int(product.height * 0.08))
+        shadow = Image.new("RGBA", (shadow_width, shadow_height), (0, 0, 0, shadow_opacity))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=shadow_blur))
+        shadow_x = (width - shadow.width) // 2
+        shadow_y = min(height - shadow.height - 12, (height + product.height) // 2 + shadow_offset_y)
+        overlay.alpha_composite(shadow, (shadow_x, shadow_y))
+        canvas.alpha_composite(overlay)
 
     def _tint_image(self, image, tone: tuple[int, int, int]):
         if Image is None:
@@ -692,6 +767,26 @@ class ImageAgent:
         base = ImageAgent._color_name_to_rgb(color_name)
         lifted = tuple(min(255, channel + 80) for channel in base)
         return (lifted, (245, 247, 250))
+
+    @staticmethod
+    def _styled_background_for_marketplace(
+        marketplace: Literal["tiktok", "shopify"],
+        attributes: dict[str, str],
+    ) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+        color_name = attributes.get("color", "")
+        base = ImageAgent._color_name_to_rgb(color_name)
+        softened = tuple(min(255, int(channel * 0.34) + 150) for channel in base)
+        neutral = (246, 248, 252) if marketplace == "shopify" else (244, 247, 251)
+        accent = tuple(min(255, int(channel * 0.52) + 92) for channel in base)
+
+        if marketplace == "shopify":
+            top = tuple(min(255, int((softened[index] * 0.58) + (neutral[index] * 0.42))) for index in range(3))
+            bottom = neutral
+            return (top, bottom)
+
+        top = tuple(min(255, int((accent[index] * 0.55) + (neutral[index] * 0.45))) for index in range(3))
+        bottom = tuple(min(255, int((softened[index] * 0.28) + (neutral[index] * 0.72))) for index in range(3))
+        return (top, bottom)
 
     def _validate_bytes(
         self,

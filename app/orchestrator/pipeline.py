@@ -5,9 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.agents.amazon_agent import AmazonAgent
+from app.agents.attribute_mapper_agent import AttributeMapperAgent
 from app.agents.core_agent import CoreAgent
 from app.agents.ebay_agent import EbayAgent
 from app.agents.image_agent import ImageAgent
+from app.agents.seo_agent import SeoAgent
 from app.agents.shopify_agent import ShopifyAgent
 from app.agents.tiktok_agent import TikTokAgent
 from app.agents.vision_agent import VisionAgent
@@ -17,7 +19,10 @@ from app.services.image_service import ImagePayload
 from app.services.cloudinary_service import CloudinaryService
 from app.services.openai_service import OpenAIService
 from app.services.ollama_service import OllamaService
+from app.services.market_research_service import MarketResearchService
 from app.services.output_service import OutputService
+from app.services.pricing_service import PricingService
+from app.services.validation_service import ValidationService
 
 
 @dataclass(slots=True)
@@ -32,10 +37,12 @@ class ProductPipeline:
         *,
         vision: VisionAgent | None = None,
         core: CoreAgent | None = None,
+        attribute_mapper: AttributeMapperAgent | None = None,
         amazon: AmazonAgent | None = None,
         tiktok: TikTokAgent | None = None,
         ebay: EbayAgent | None = None,
         shopify: ShopifyAgent | None = None,
+        seo: SeoAgent | None = None,
     ) -> None:
         settings = get_settings()
         self.output_service = OutputService(
@@ -62,11 +69,16 @@ class ProductPipeline:
         )
         self.vision = vision or VisionAgent()
         self.core = core or CoreAgent(self.ollama_service, self.openai_service)
+        self.attribute_mapper = attribute_mapper or AttributeMapperAgent(self.openai_service)
         self.amazon = amazon or AmazonAgent(self.ollama_service, self.openai_service)
         self.tiktok = tiktok or TikTokAgent(self.ollama_service, self.openai_service)
         self.ebay = ebay or EbayAgent(self.ollama_service, self.openai_service)
         self.shopify = shopify or ShopifyAgent(self.ollama_service, self.openai_service)
+        self.seo = seo or SeoAgent(self.openai_service)
         self.images = ImageAgent(self.openai_service)
+        self.research = MarketResearchService(settings)
+        self.pricing = PricingService()
+        self.validation = ValidationService()
 
     async def run(self, image: ImagePayload, title: str) -> ProductPipelineResponse:
         result = await self.run_with_context(image, title)
@@ -77,13 +89,20 @@ class ProductPipeline:
         vision_data = await self.vision.process(image)
         self.output_service.save_json(run_dir, "vision", vision_data.model_dump())
         core_data = await self.core.process(title, vision_data)
+        core_data = await self.attribute_mapper.process(core_data, vision_data)
         self.output_service.save_json(run_dir, "core", core_data.model_dump())
+        research_data = await self.research.build_research_bundle(core_data)
+        self.output_service.save_json(run_dir, "research", research_data.model_dump())
+        seo_data = await self.seo.process(core_data, research_data)
+        self.output_service.save_json(run_dir, "seo", seo_data.model_dump())
+        pricing_data = self.pricing.build_pricing(research_data)
+        self.output_service.save_json(run_dir, "pricing", pricing_data.model_dump())
 
         amazon_data, tiktok_data, ebay_data, shopify_data = await asyncio.gather(
-            self.amazon.process(core_data),
-            self.tiktok.process(core_data),
-            self.ebay.process(core_data),
-            self.shopify.process(core_data),
+            self.amazon.process(core_data, research=research_data.amazon, seo=seo_data, pricing=pricing_data.amazon),
+            self.tiktok.process(core_data, research=research_data.tiktok, seo=seo_data, pricing=pricing_data.tiktok),
+            self.ebay.process(core_data, research=research_data.ebay, seo=seo_data, pricing=pricing_data.ebay),
+            self.shopify.process(core_data, research=research_data.shopify, seo=seo_data, pricing=pricing_data.shopify),
         )
         self.output_service.save_json(run_dir, "amazon", amazon_data.model_dump())
         self.output_service.save_json(run_dir, "tiktok", tiktok_data.model_dump())
@@ -100,6 +119,15 @@ class ProductPipeline:
             output_service=self.output_service,
         )
         self.output_service.save_json(run_dir, "images", image_data.model_dump())
+        validation_data = self.validation.validate_pipeline(
+            core=core_data,
+            amazon=amazon_data,
+            ebay=ebay_data,
+            tiktok=tiktok_data,
+            shopify=shopify_data,
+            images=image_data,
+        )
+        self.output_service.save_json(run_dir, "validation", validation_data.model_dump())
 
         response = ProductPipelineResponse(
             core=core_data,
@@ -108,6 +136,12 @@ class ProductPipeline:
             ebay=ebay_data,
             shopify=shopify_data,
             images=image_data,
+            intelligence={
+                "research": research_data,
+                "seo": seo_data,
+                "pricing": pricing_data,
+                "validation": validation_data,
+            },
         )
         self.output_service.save_json(run_dir, "final", response.model_dump())
         return PipelineRunResult(run_dir=run_dir, response=response)

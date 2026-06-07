@@ -154,19 +154,23 @@ class ProductService:
         source_image = self._load_source_image(record)
 
         core = record.product.core
+        research = await self.pipeline.research.build_research_bundle(core)
+        seo = await self.pipeline.seo.process(core, research)
+        pricing = self.pipeline.pricing.build_pricing(research)
+
         amazon = record.product.amazon
         ebay = record.product.ebay
         tiktok = record.product.tiktok
         shopify = record.product.shopify
 
         if marketplace == "amazon":
-            amazon = await self.amazon_agent.process(core)
+            amazon = await self.amazon_agent.process(core, research=research.amazon, seo=seo, pricing=pricing.amazon)
         elif marketplace == "ebay":
-            ebay = await self.ebay_agent.process(core)
+            ebay = await self.ebay_agent.process(core, research=research.ebay, seo=seo, pricing=pricing.ebay)
         elif marketplace == "tiktok":
-            tiktok = await self.tiktok_agent.process(core)
+            tiktok = await self.tiktok_agent.process(core, research=research.tiktok, seo=seo, pricing=pricing.tiktok)
         else:
-            shopify = await self.shopify_agent.process(core)
+            shopify = await self.shopify_agent.process(core, research=research.shopify, seo=seo, pricing=pricing.shopify)
 
         product_dir = self.store.get_product_dir(record.id)
         image_asset = await self.image_agent.regenerate_marketplace_asset(
@@ -182,6 +186,14 @@ class ProductService:
             output_service=self.output_service,
         )
         images = record.product.images.model_copy(update={marketplace: image_asset})
+        validation = self.pipeline.validation.validate_pipeline(
+            core=core,
+            amazon=amazon,
+            ebay=ebay,
+            tiktok=tiktok,
+            shopify=shopify,
+            images=images,
+        )
         product = ProductPipelineResponse(
             core=core,
             amazon=amazon,
@@ -189,6 +201,12 @@ class ProductService:
             tiktok=tiktok,
             shopify=shopify,
             images=images,
+            intelligence={
+                "research": research,
+                "seo": seo,
+                "pricing": pricing,
+                "validation": validation,
+            },
         )
         updated = record.model_copy(update={"product": product, "updated_at": self._timestamp()})
         self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)

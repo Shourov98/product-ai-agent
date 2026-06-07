@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.schemas.response import CoreProductResponse, EbayResponse
+from app.schemas.response import CoreProductResponse, EbayResponse, MarketplacePricingResponse, MarketplaceResearchResponse, SeoInsightsResponse
 from app.services.openai_service import OpenAIService, OpenAIServiceError
 from app.services.ollama_service import OllamaService, OllamaServiceError
 
@@ -26,16 +26,19 @@ class EbayAgent:
         self.ollama_service = ollama_service
         self.openai_service = openai_service
 
-    async def process(self, core_data: CoreProductResponse) -> EbayResponse:
+    async def process(
+        self,
+        core_data: CoreProductResponse,
+        *,
+        research: MarketplaceResearchResponse | None = None,
+        seo: SeoInsightsResponse | None = None,
+        pricing: MarketplacePricingResponse | None = None,
+    ) -> EbayResponse:
         fallback = EbayResponse(
-            title=self._build_title(core_data)[:80],
-            item_specifics={
-                "Brand": core_data.attributes.get("brand", "Unbranded"),
-                "Type": core_data.product_type.title(),
-                **{key.title(): value.title() for key, value in core_data.attributes.items()},
-            },
+            title=self._build_title(core_data, seo)[:80],
+            item_specifics=self._build_item_specifics(core_data, research),
             condition=self._map_condition(core_data),
-            listing_notes=f"{core_data.product_summary} Suitable for a clean eBay listing with clear item specifics.",
+            listing_notes=self._build_listing_notes(core_data, pricing),
         )
         if self.openai_service is not None:
             try:
@@ -44,7 +47,12 @@ class EbayAgent:
                         "You are a senior eBay listing specialist. Return concise, sale-ready listing data. "
                         "Do not mention AI, normalization, or confidence scores."
                     ),
-                    user_payload={"core_product": core_data.model_dump()},
+                    user_payload={
+                        "core_product": core_data.model_dump(),
+                        "research": research.model_dump() if research is not None else None,
+                        "seo": seo.model_dump() if seo is not None else None,
+                        "pricing": pricing.model_dump() if pricing is not None else None,
+                    },
                     schema_name="ebay_listing",
                     schema=self._SCHEMA,
                 )
@@ -78,12 +86,37 @@ class EbayAgent:
         )
 
     @staticmethod
-    def _build_title(core_data: CoreProductResponse) -> str:
+    def _build_title(core_data: CoreProductResponse, seo: SeoInsightsResponse | None) -> str:
         parts = [
             core_data.normalized_title,
             core_data.attributes.get("color", "").title(),
+            seo.marketplace_keywords.get("ebay", [None])[0] if seo is not None else None,
         ]
         return " - ".join(part for part in parts if part)
+
+    @staticmethod
+    def _build_item_specifics(
+        core_data: CoreProductResponse,
+        research: MarketplaceResearchResponse | None,
+    ) -> dict[str, str]:
+        specifics = {
+            "Brand": core_data.attributes.get("brand", "Unbranded"),
+            "Type": core_data.product_type.title(),
+            **{key.title(): value.title() for key, value in core_data.attributes.items()},
+        }
+        if research is not None and research.similar_listings:
+            for key, value in research.similar_listings[0].attributes.items():
+                specifics.setdefault(str(key), str(value))
+        return specifics
+
+    @staticmethod
+    def _build_listing_notes(core_data: CoreProductResponse, pricing: MarketplacePricingResponse | None) -> str:
+        price_sentence = (
+            f"Recommended pricing sits near {pricing.recommended:.2f} USD for a {pricing.strategy} listing."
+            if pricing is not None
+            else ""
+        )
+        return f"{core_data.product_summary} Suitable for a clean eBay listing with clear item specifics. {price_sentence}".strip()
 
     @staticmethod
     def _map_condition(core_data: CoreProductResponse) -> str:
