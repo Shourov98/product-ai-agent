@@ -14,3 +14,4 @@ output/
 .env
 client-presentation-summary.txt
 product-ai-agent-client-presentation.pptx
+generate_client_presentation.py
