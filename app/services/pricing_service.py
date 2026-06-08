@@ -11,6 +11,7 @@ class PricingService:
     _STRATEGIES = {
         "amazon": ("balanced", 1.0),
         "ebay": ("competitive", 0.97),
+        "etsy": ("value-crafted", 1.05),
         "tiktok": ("aggressive", 0.94),
         "shopify": ("premium", 1.08),
     }
@@ -28,7 +29,7 @@ class PricingService:
         average = research.price_avg or 19.99
         minimum = research.price_min or average * 0.9
         maximum = research.price_max or average * 1.1
-        strategy, multiplier = self._STRATEGIES[research.marketplace]
+        strategy, multiplier = self._STRATEGIES.get(research.marketplace, ("balanced", 1.0))
         recommended = round(average * multiplier, 2)
         floor = round(min(minimum, recommended * 0.92), 2)
         ceiling = round(max(maximum, recommended * 1.08), 2)
