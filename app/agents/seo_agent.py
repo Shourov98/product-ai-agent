@@ -73,6 +73,7 @@ class SeoAgent:
         marketplace_keywords = {
             "amazon": unique_strings(primary + research.amazon.keyword_signals, limit=10),
             "ebay": unique_strings(primary + research.ebay.keyword_signals, limit=10),
+            "etsy": unique_strings(primary + research.etsy.keyword_signals, limit=10),
             "tiktok": unique_strings(primary + research.tiktok.keyword_signals, limit=10),
             "shopify": unique_strings(primary + research.shopify.keyword_signals, limit=10),
         }

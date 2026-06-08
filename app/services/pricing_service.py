@@ -19,6 +19,7 @@ class PricingService:
         return PricingInsightsResponse(
             amazon=self._build_marketplace_pricing(research.amazon),
             ebay=self._build_marketplace_pricing(research.ebay),
+            etsy=self._build_marketplace_pricing(research.etsy),
             tiktok=self._build_marketplace_pricing(research.tiktok),
             shopify=self._build_marketplace_pricing(research.shopify),
         )

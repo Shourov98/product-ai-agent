@@ -30,6 +30,7 @@ def _empty_intelligence() -> "IntelligenceLayerResponse":
         research=MarketResearchBundleResponse(
             amazon=_empty_research_for("amazon"),
             ebay=_empty_research_for("ebay"),
+            etsy=_empty_research_for("etsy"),
             tiktok=_empty_research_for("tiktok"),
             shopify=_empty_research_for("shopify"),
         ),
@@ -37,6 +38,7 @@ def _empty_intelligence() -> "IntelligenceLayerResponse":
         pricing=PricingInsightsResponse(
             amazon=_empty_pricing_for("amazon"),
             ebay=_empty_pricing_for("ebay"),
+            etsy=_empty_pricing_for("etsy"),
             tiktok=_empty_pricing_for("tiktok"),
             shopify=_empty_pricing_for("shopify"),
         ),
@@ -44,6 +46,7 @@ def _empty_intelligence() -> "IntelligenceLayerResponse":
             core=_empty_section_validation(),
             amazon=_empty_section_validation(),
             ebay=_empty_section_validation(),
+            etsy=_empty_section_validation(),
             tiktok=_empty_section_validation(),
             shopify=_empty_section_validation(),
             images=_empty_section_validation(),
@@ -114,6 +117,15 @@ class ShopifyResponse(BaseModel):
     seo_description: str
 
 
+class EtsyResponse(BaseModel):
+    title: str
+    description: str
+    tags: list[str]
+    materials: list[str]
+    occasion: str
+    seo_keywords: list[str]
+
+
 class ResearchEvidenceResponse(BaseModel):
     source: str
     title: str
@@ -138,6 +150,7 @@ class MarketplaceResearchResponse(BaseModel):
 class MarketResearchBundleResponse(BaseModel):
     amazon: MarketplaceResearchResponse
     ebay: MarketplaceResearchResponse
+    etsy: MarketplaceResearchResponse
     tiktok: MarketplaceResearchResponse
     shopify: MarketplaceResearchResponse
 
@@ -162,6 +175,7 @@ class MarketplacePricingResponse(BaseModel):
 class PricingInsightsResponse(BaseModel):
     amazon: MarketplacePricingResponse
     ebay: MarketplacePricingResponse
+    etsy: MarketplacePricingResponse
     tiktok: MarketplacePricingResponse
     shopify: MarketplacePricingResponse
 
@@ -195,6 +209,7 @@ class GeneratedImagesResponse(BaseModel):
     transparent_cutout: ImageVariantResponse | None = None
     amazon: ImageVariantResponse
     ebay: ImageVariantResponse
+    etsy: ImageVariantResponse
     tiktok: ImageVariantResponse
     shopify: ImageVariantResponse
 
@@ -214,6 +229,7 @@ class PipelineValidationResponse(BaseModel):
     core: SectionValidationResponse
     amazon: SectionValidationResponse
     ebay: SectionValidationResponse
+    etsy: SectionValidationResponse
     tiktok: SectionValidationResponse
     shopify: SectionValidationResponse
     images: SectionValidationResponse
@@ -229,6 +245,7 @@ class IntelligenceLayerResponse(BaseModel):
 class ProductPipelineResponse(BaseModel):
     core: CoreProductResponse
     amazon: AmazonResponse
+    etsy: EtsyResponse
     tiktok: TikTokResponse
     ebay: EbayResponse
     shopify: ShopifyResponse
@@ -236,7 +253,7 @@ class ProductPipelineResponse(BaseModel):
     intelligence: IntelligenceLayerResponse = Field(default_factory=_empty_intelligence)
 
 
-MarketplaceLiteral = Literal["amazon", "ebay", "tiktok", "shopify"]
+MarketplaceLiteral = Literal["amazon", "ebay", "etsy", "tiktok", "shopify"]
 VariantTypeLiteral = Literal["size", "color"]
 ProductStatusLiteral = Literal["draft", "published"]
 
@@ -254,6 +271,7 @@ class ProductVariantResponse(BaseModel):
 class MarketplaceVariantsResponse(BaseModel):
     amazon: list[ProductVariantResponse] = Field(default_factory=list)
     ebay: list[ProductVariantResponse] = Field(default_factory=list)
+    etsy: list[ProductVariantResponse] = Field(default_factory=list)
     tiktok: list[ProductVariantResponse] = Field(default_factory=list)
     shopify: list[ProductVariantResponse] = Field(default_factory=list)
 

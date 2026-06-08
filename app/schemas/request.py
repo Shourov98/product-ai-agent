@@ -9,6 +9,11 @@ class ProductGenerationRequest(BaseModel):
     title: str = Field(min_length=3, max_length=200)
 
 
+class ProductOptimizationRequest(BaseModel):
+    marketplaces: list[Literal["amazon", "ebay", "etsy", "tiktok", "shopify"]] | None = None
+    optimize_core: bool = True
+
+
 class CoreProductUpdateRequest(BaseModel):
     normalized_title: str | None = Field(default=None, min_length=1, max_length=200)
     category: str | None = Field(default=None, min_length=1, max_length=200)
@@ -49,11 +54,21 @@ class ShopifyUpdateRequest(BaseModel):
     seo_description: str | None = Field(default=None, min_length=1, max_length=180)
 
 
+class EtsyUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=140)
+    description: str | None = Field(default=None, min_length=1)
+    tags: list[str] | None = None
+    materials: list[str] | None = None
+    occasion: str | None = Field(default=None, min_length=1, max_length=120)
+    seo_keywords: list[str] | None = None
+
+
 class ProductUpdateRequest(BaseModel):
     core: CoreProductUpdateRequest | None = None
     amazon: AmazonUpdateRequest | None = None
     tiktok: TikTokUpdateRequest | None = None
     ebay: EbayUpdateRequest | None = None
+    etsy: EtsyUpdateRequest | None = None
     shopify: ShopifyUpdateRequest | None = None
 
 
@@ -62,4 +77,4 @@ class VariantCreateRequest(BaseModel):
     value: str | None = Field(default=None, max_length=120)
 
 
-MarketplaceRequestLiteral = Literal["amazon", "ebay", "tiktok", "shopify"]
+MarketplaceRequestLiteral = Literal["amazon", "ebay", "etsy", "tiktok", "shopify"]

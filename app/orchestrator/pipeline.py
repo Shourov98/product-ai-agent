@@ -8,6 +8,7 @@ from app.agents.amazon_agent import AmazonAgent
 from app.agents.attribute_mapper_agent import AttributeMapperAgent
 from app.agents.core_agent import CoreAgent
 from app.agents.ebay_agent import EbayAgent
+from app.agents.etsy_agent import EtsyAgent
 from app.agents.image_agent import ImageAgent
 from app.agents.seo_agent import SeoAgent
 from app.agents.shopify_agent import ShopifyAgent
@@ -41,6 +42,7 @@ class ProductPipeline:
         amazon: AmazonAgent | None = None,
         tiktok: TikTokAgent | None = None,
         ebay: EbayAgent | None = None,
+        etsy: EtsyAgent | None = None,
         shopify: ShopifyAgent | None = None,
         seo: SeoAgent | None = None,
     ) -> None:
@@ -73,6 +75,7 @@ class ProductPipeline:
         self.amazon = amazon or AmazonAgent(self.ollama_service, self.openai_service)
         self.tiktok = tiktok or TikTokAgent(self.ollama_service, self.openai_service)
         self.ebay = ebay or EbayAgent(self.ollama_service, self.openai_service)
+        self.etsy = etsy or EtsyAgent(self.ollama_service, self.openai_service)
         self.shopify = shopify or ShopifyAgent(self.ollama_service, self.openai_service)
         self.seo = seo or SeoAgent(self.openai_service)
         self.images = ImageAgent(self.openai_service)
@@ -98,21 +101,24 @@ class ProductPipeline:
         pricing_data = self.pricing.build_pricing(research_data)
         self.output_service.save_json(run_dir, "pricing", pricing_data.model_dump())
 
-        amazon_data, tiktok_data, ebay_data, shopify_data = await asyncio.gather(
+        amazon_data, tiktok_data, ebay_data, etsy_data, shopify_data = await asyncio.gather(
             self.amazon.process(core_data, research=research_data.amazon, seo=seo_data, pricing=pricing_data.amazon),
             self.tiktok.process(core_data, research=research_data.tiktok, seo=seo_data, pricing=pricing_data.tiktok),
             self.ebay.process(core_data, research=research_data.ebay, seo=seo_data, pricing=pricing_data.ebay),
+            self.etsy.process(core_data, research=research_data.etsy, seo=seo_data, pricing=pricing_data.etsy),
             self.shopify.process(core_data, research=research_data.shopify, seo=seo_data, pricing=pricing_data.shopify),
         )
         self.output_service.save_json(run_dir, "amazon", amazon_data.model_dump())
         self.output_service.save_json(run_dir, "tiktok", tiktok_data.model_dump())
         self.output_service.save_json(run_dir, "ebay", ebay_data.model_dump())
+        self.output_service.save_json(run_dir, "etsy", etsy_data.model_dump())
         self.output_service.save_json(run_dir, "shopify", shopify_data.model_dump())
         image_data = await self.images.process(
             image=image,
             core_data=core_data,
             amazon_data=amazon_data,
             ebay_data=ebay_data,
+            etsy_data=etsy_data,
             tiktok_data=tiktok_data,
             shopify_data=shopify_data,
             run_dir=run_dir,
@@ -123,6 +129,7 @@ class ProductPipeline:
             core=core_data,
             amazon=amazon_data,
             ebay=ebay_data,
+            etsy=etsy_data,
             tiktok=tiktok_data,
             shopify=shopify_data,
             images=image_data,
@@ -132,6 +139,7 @@ class ProductPipeline:
         response = ProductPipelineResponse(
             core=core_data,
             amazon=amazon_data,
+            etsy=etsy_data,
             tiktok=tiktok_data,
             ebay=ebay_data,
             shopify=shopify_data,

@@ -10,16 +10,19 @@ from fastapi import HTTPException, status
 from app.auth import AuthenticatedUser
 from app.agents.amazon_agent import AmazonAgent
 from app.agents.ebay_agent import EbayAgent
+from app.agents.etsy_agent import EtsyAgent
 from app.agents.image_agent import ImageAgent
+from app.agents.product_optimization_agent import ProductOptimizationAgent
 from app.agents.shopify_agent import ShopifyAgent
 from app.agents.tiktok_agent import TikTokAgent
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
-from app.schemas.request import ProductUpdateRequest, VariantCreateRequest
+from app.schemas.request import ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
 from app.schemas.response import (
     AmazonResponse,
     CoreProductResponse,
     EbayResponse,
+    EtsyResponse,
     MarketplaceLiteral,
     MarketplaceVariantsResponse,
     ProductListItemResponse,
@@ -64,8 +67,10 @@ class ProductService:
         self.image_agent = ImageAgent(self.pipeline.openai_service)
         self.amazon_agent = AmazonAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
         self.ebay_agent = EbayAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
+        self.etsy_agent = EtsyAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
         self.tiktok_agent = TikTokAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
         self.shopify_agent = ShopifyAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
+        self.optimization_agent = ProductOptimizationAgent(self.pipeline.openai_service)
 
     async def generate_and_store(
         self,
@@ -128,6 +133,12 @@ class ProductService:
                     "ebay": product.ebay.model_copy(update=payload.ebay.model_dump(exclude_unset=True))
                 }
             )
+        if payload.etsy is not None:
+            product = product.model_copy(
+                update={
+                    "etsy": product.etsy.model_copy(update=payload.etsy.model_dump(exclude_unset=True))
+                }
+            )
         if payload.shopify is not None:
             product = product.model_copy(
                 update={
@@ -138,6 +149,66 @@ class ProductService:
         updated = record.model_copy(
             update={
                 "product": product,
+                "updated_at": self._timestamp(),
+            }
+        )
+        self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
+        return updated
+
+    async def optimize_product(
+        self,
+        product_id: str,
+        payload: ProductOptimizationRequest,
+        current_user: AuthenticatedUser | None = None,
+    ) -> ProductRecordResponse:
+        record = self.get_product(product_id, current_user=current_user)
+        current_product = record.product
+        research = await self.pipeline.research.build_research_bundle(current_product.core)
+        seo = await self.pipeline.seo.process(current_product.core, research)
+        pricing = self.pipeline.pricing.build_pricing(research)
+
+        optimized = await self.optimization_agent.process(
+            product=current_product,
+            research=research,
+            seo=seo,
+            pricing=pricing,
+            marketplaces=payload.marketplaces,
+            optimize_core=payload.optimize_core,
+        )
+        optimized_core = self.optimization_agent.coerce_core(optimized.get("core"), current_product.core)
+        optimized_amazon = self.optimization_agent.coerce_amazon(optimized.get("amazon"), current_product.amazon)
+        optimized_ebay = self.optimization_agent.coerce_ebay(optimized.get("ebay"), current_product.ebay)
+        optimized_etsy = self.optimization_agent.coerce_etsy(optimized.get("etsy"), current_product.etsy)
+        optimized_tiktok = self.optimization_agent.coerce_tiktok(optimized.get("tiktok"), current_product.tiktok)
+        optimized_shopify = self.optimization_agent.coerce_shopify(optimized.get("shopify"), current_product.shopify)
+
+        validation = self.pipeline.validation.validate_pipeline(
+            core=optimized_core,
+            amazon=optimized_amazon,
+            ebay=optimized_ebay,
+            etsy=optimized_etsy,
+            tiktok=optimized_tiktok,
+            shopify=optimized_shopify,
+            images=current_product.images,
+        )
+        optimized_product = ProductPipelineResponse(
+            core=optimized_core,
+            amazon=optimized_amazon,
+            ebay=optimized_ebay,
+            etsy=optimized_etsy,
+            tiktok=optimized_tiktok,
+            shopify=optimized_shopify,
+            images=current_product.images,
+            intelligence={
+                "research": research,
+                "seo": seo,
+                "pricing": pricing,
+                "validation": validation,
+            },
+        )
+        updated = record.model_copy(
+            update={
+                "product": optimized_product,
                 "updated_at": self._timestamp(),
             }
         )
@@ -160,6 +231,7 @@ class ProductService:
 
         amazon = record.product.amazon
         ebay = record.product.ebay
+        etsy = record.product.etsy
         tiktok = record.product.tiktok
         shopify = record.product.shopify
 
@@ -167,6 +239,8 @@ class ProductService:
             amazon = await self.amazon_agent.process(core, research=research.amazon, seo=seo, pricing=pricing.amazon)
         elif marketplace == "ebay":
             ebay = await self.ebay_agent.process(core, research=research.ebay, seo=seo, pricing=pricing.ebay)
+        elif marketplace == "etsy":
+            etsy = await self.etsy_agent.process(core, research=research.etsy, seo=seo, pricing=pricing.etsy)
         elif marketplace == "tiktok":
             tiktok = await self.tiktok_agent.process(core, research=research.tiktok, seo=seo, pricing=pricing.tiktok)
         else:
@@ -180,6 +254,7 @@ class ProductService:
             core_data=core,
             amazon_data=amazon,
             ebay_data=ebay,
+            etsy_data=etsy,
             tiktok_data=tiktok,
             shopify_data=shopify,
             run_dir=product_dir,
@@ -190,6 +265,7 @@ class ProductService:
             core=core,
             amazon=amazon,
             ebay=ebay,
+            etsy=etsy,
             tiktok=tiktok,
             shopify=shopify,
             images=images,
@@ -198,6 +274,7 @@ class ProductService:
             core=core,
             amazon=amazon,
             ebay=ebay,
+            etsy=etsy,
             tiktok=tiktok,
             shopify=shopify,
             images=images,
@@ -274,6 +351,7 @@ class ProductService:
         variant_map = {
             "amazon": list(record.variants.amazon),
             "ebay": list(record.variants.ebay),
+            "etsy": list(record.variants.etsy),
             "tiktok": list(record.variants.tiktok),
             "shopify": list(record.variants.shopify),
         }

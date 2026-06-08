@@ -4,6 +4,7 @@ from app.schemas.response import (
     AmazonResponse,
     CoreProductResponse,
     EbayResponse,
+    EtsyResponse,
     GeneratedImagesResponse,
     PipelineValidationResponse,
     SectionValidationResponse,
@@ -20,6 +21,7 @@ class ValidationService:
         core: CoreProductResponse,
         amazon: AmazonResponse,
         ebay: EbayResponse,
+        etsy: EtsyResponse,
         tiktok: TikTokResponse,
         shopify: ShopifyResponse,
         images: GeneratedImagesResponse,
@@ -28,6 +30,7 @@ class ValidationService:
             core=self._validate_core(core),
             amazon=self._validate_amazon(amazon),
             ebay=self._validate_ebay(ebay),
+            etsy=self._validate_etsy(etsy),
             tiktok=self._validate_tiktok(tiktok),
             shopify=self._validate_shopify(shopify),
             images=self._validate_images(images),
@@ -69,6 +72,16 @@ class ValidationService:
             issues.append(self._warning("tiktok.social_description", "TikTok social copy is too short to carry selling points."))
         return self._section(issues)
 
+    def _validate_etsy(self, etsy: EtsyResponse) -> SectionValidationResponse:
+        issues: list[ValidationIssueResponse] = []
+        if len(etsy.title) > 140:
+            issues.append(self._error("etsy.title", "Etsy title exceeds 140 characters."))
+        if len(etsy.tags) < 8:
+            issues.append(self._warning("etsy.tags", "Etsy tag coverage is low."))
+        if not etsy.materials:
+            issues.append(self._warning("etsy.materials", "Etsy materials list is empty."))
+        return self._section(issues)
+
     def _validate_shopify(self, shopify: ShopifyResponse) -> SectionValidationResponse:
         issues: list[ValidationIssueResponse] = []
         if len(shopify.seo_title) > 70:
@@ -86,6 +99,7 @@ class ValidationService:
             "transparent_cutout": images.transparent_cutout,
             "amazon": images.amazon,
             "ebay": images.ebay,
+            "etsy": images.etsy,
             "tiktok": images.tiktok,
             "shopify": images.shopify,
         }

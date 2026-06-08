@@ -10,6 +10,7 @@ from app.schemas.response import (
     AmazonResponse,
     CoreProductResponse,
     EbayResponse,
+    EtsyResponse,
     GeneratedImagesResponse,
     ImageVariantResponse,
     ImageValidationResponse,
@@ -24,7 +25,7 @@ try:
 except ImportError:  # pragma: no cover - dependency missing at runtime
     Image = None
 
-MarketplaceName = Literal["source", "transparent_cutout", "amazon", "ebay", "tiktok", "shopify"]
+MarketplaceName = Literal["source", "transparent_cutout", "amazon", "ebay", "etsy", "tiktok", "shopify"]
 
 
 class ImageAgent:
@@ -62,6 +63,20 @@ class ImageAgent:
             "shadow_blur": 48,
             "shadow_offset_y": 34,
         },
+        "etsy": {
+            "size": "1200x900",
+            "background": "opaque",
+            "prompt_prefix": (
+                "Create an Etsy-ready hero image by changing only the background and scene styling. "
+                "Preserve the exact product color, material, silhouette, proportions, finish, and visible details. "
+                "Do not redesign, recolor, restyle, reshape, or replace the product. "
+                "Use a tasteful handcrafted marketplace backdrop with no text, no logos, and no badges."
+            ),
+            "composite_scale": 0.7,
+            "shadow_opacity": 56,
+            "shadow_blur": 30,
+            "shadow_offset_y": 20,
+        },
         "shopify": {
             "size": "1024x1024",
             "background": "opaque",
@@ -88,6 +103,7 @@ class ImageAgent:
         core_data: CoreProductResponse,
         amazon_data: AmazonResponse,
         ebay_data: EbayResponse,
+        etsy_data: EtsyResponse,
         tiktok_data: TikTokResponse,
         shopify_data: ShopifyResponse,
         run_dir: Path,
@@ -131,6 +147,16 @@ class ImageAgent:
             run_dir=run_dir,
             output_service=output_service,
         )
+        etsy_asset = await self._build_marketplace_variant(
+            marketplace="etsy",
+            source=image,
+            base_image_path=cutout_asset.absolute_path if cutout_asset else source_asset.absolute_path,
+            title=etsy_data.title,
+            description=etsy_data.description,
+            attributes=core_data.attributes,
+            run_dir=run_dir,
+            output_service=output_service,
+        )
         shopify_asset = await self._build_marketplace_variant(
             marketplace="shopify",
             source=image,
@@ -147,6 +173,7 @@ class ImageAgent:
             transparent_cutout=cutout_asset,
             amazon=amazon_asset,
             ebay=ebay_asset,
+            etsy=etsy_asset,
             tiktok=tiktok_asset,
             shopify=shopify_asset,
         )
@@ -154,12 +181,13 @@ class ImageAgent:
     async def regenerate_marketplace_asset(
         self,
         *,
-        marketplace: Literal["amazon", "ebay", "tiktok", "shopify"],
+        marketplace: Literal["amazon", "ebay", "etsy", "tiktok", "shopify"],
         source: ImagePayload,
         existing_images: GeneratedImagesResponse,
         core_data: CoreProductResponse,
         amazon_data: AmazonResponse,
         ebay_data: EbayResponse,
+        etsy_data: EtsyResponse,
         tiktok_data: TikTokResponse,
         shopify_data: ShopifyResponse,
         run_dir: Path,
@@ -192,6 +220,18 @@ class ImageAgent:
                 run_dir=run_dir,
                 output_service=output_service,
             )
+        if marketplace == "etsy":
+            base_image_path = cutout_path or existing_images.source.absolute_path
+            return await self._build_marketplace_variant(
+                marketplace="etsy",
+                source=source,
+                base_image_path=base_image_path,
+                title=etsy_data.title,
+                description=etsy_data.description,
+                attributes=core_data.attributes,
+                run_dir=run_dir,
+                output_service=output_service,
+            )
         if marketplace == "tiktok":
             base_image_path = cutout_path or existing_images.source.absolute_path
             return await self._build_marketplace_variant(
@@ -220,7 +260,7 @@ class ImageAgent:
     def build_color_variant_asset(
         self,
         *,
-        marketplace: Literal["amazon", "ebay", "tiktok", "shopify"],
+        marketplace: Literal["amazon", "ebay", "etsy", "tiktok", "shopify"],
         source: ImagePayload,
         existing_images: GeneratedImagesResponse,
         color_name: str,
@@ -448,7 +488,7 @@ class ImageAgent:
     async def _build_marketplace_variant(
         self,
         *,
-        marketplace: Literal["tiktok", "shopify"],
+        marketplace: Literal["etsy", "tiktok", "shopify"],
         source: ImagePayload,
         base_image_path: str,
         title: str,
@@ -647,7 +687,7 @@ class ImageAgent:
                 canvas.putpixel((x, y), (*row, 255))
         return canvas
 
-    def _draw_spotlight(self, canvas, marketplace: Literal["tiktok", "shopify"]) -> None:
+    def _draw_spotlight(self, canvas, marketplace: Literal["etsy", "tiktok", "shopify"]) -> None:
         if Image is None:
             raise RuntimeError("Pillow is not installed.")
 
@@ -755,7 +795,7 @@ class ImageAgent:
 
     @staticmethod
     def _background_for_marketplace(
-        marketplace: Literal["amazon", "ebay", "tiktok", "shopify"],
+        marketplace: Literal["amazon", "ebay", "etsy", "tiktok", "shopify"],
         width: int,
         height: int,
         color_name: str,
@@ -770,7 +810,7 @@ class ImageAgent:
 
     @staticmethod
     def _styled_background_for_marketplace(
-        marketplace: Literal["tiktok", "shopify"],
+        marketplace: Literal["etsy", "tiktok", "shopify"],
         attributes: dict[str, str],
     ) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
         color_name = attributes.get("color", "")
@@ -782,6 +822,11 @@ class ImageAgent:
         if marketplace == "shopify":
             top = tuple(min(255, int((softened[index] * 0.58) + (neutral[index] * 0.42))) for index in range(3))
             bottom = neutral
+            return (top, bottom)
+
+        if marketplace == "etsy":
+            top = tuple(min(255, int((softened[index] * 0.42) + 140)) for index in range(3))
+            bottom = (248, 244, 238)
             return (top, bottom)
 
         top = tuple(min(255, int((accent[index] * 0.55) + (neutral[index] * 0.45))) for index in range(3))

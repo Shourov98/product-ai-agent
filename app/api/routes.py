@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from app.auth import AuthenticatedUser, get_optional_current_user
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
-from app.schemas.request import MarketplaceRequestLiteral, ProductUpdateRequest, VariantCreateRequest
+from app.schemas.request import MarketplaceRequestLiteral, ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
 from app.schemas.response import ProductListItemResponse, ProductPipelineResponse, ProductRecordResponse
 from app.services.image_service import ImagePayload
 from app.services.product_service import ProductService
@@ -123,6 +123,20 @@ async def update_product(
 ) -> ProductRecordResponse:
     service = ProductService()
     return service.update_product(product_id, payload, current_user=current_user)
+
+
+@router.post(
+    "/products/{product_id}/optimize",
+    response_model=ProductRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def optimize_product(
+    product_id: str,
+    payload: ProductOptimizationRequest,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ProductRecordResponse:
+    service = ProductService()
+    return await service.optimize_product(product_id, payload, current_user=current_user)
 
 
 @router.post(

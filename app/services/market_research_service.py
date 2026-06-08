@@ -17,6 +17,7 @@ class MarketResearchService:
     _MARKETPLACE_PREFIXES = {
         "amazon": ("best selling", "top rated", "high intent"),
         "ebay": ("buy it now", "item specifics", "value listing"),
+        "etsy": ("handmade style", "giftable", "search rich"),
         "tiktok": ("viral find", "creator favorite", "trend driven"),
         "shopify": ("premium storefront", "direct to consumer", "brand led"),
     }
@@ -24,6 +25,7 @@ class MarketResearchService:
     _MARKETPLACE_PRICE_MULTIPLIERS = {
         "amazon": (0.94, 1.0, 1.08),
         "ebay": (0.9, 0.97, 1.04),
+        "etsy": (0.96, 1.05, 1.16),
         "tiktok": (0.88, 0.95, 1.02),
         "shopify": (0.98, 1.08, 1.18),
     }
@@ -43,11 +45,13 @@ class MarketResearchService:
     async def build_research_bundle(self, core_data: CoreProductResponse) -> MarketResearchBundleResponse:
         amazon = self._build_marketplace_research("amazon", core_data)
         ebay = await self._build_ebay_marketplace_research(core_data)
+        etsy = self._build_marketplace_research("etsy", core_data)
         tiktok = self._build_marketplace_research("tiktok", core_data)
         shopify = self._build_marketplace_research("shopify", core_data)
         return MarketResearchBundleResponse(
             amazon=amazon,
             ebay=ebay,
+            etsy=etsy,
             tiktok=tiktok,
             shopify=shopify,
         )
@@ -110,6 +114,8 @@ class MarketResearchService:
             prefixes.extend(["durable", "giftable", "everyday use"])
         elif marketplace == "ebay":
             prefixes.extend(["fast shipping", "clear condition", "spec driven"])
+        elif marketplace == "etsy":
+            prefixes.extend(["handmade appeal", "gift intent", "artisan style"])
         elif marketplace == "tiktok":
             prefixes.extend(["scroll stopping", "shareable", "creator style"])
         else:
@@ -149,6 +155,8 @@ class MarketResearchService:
             return f"{title_root} for Everyday Performance Variation {index}".strip()
         if marketplace == "ebay":
             return f"{title_root} | Clean Listing Option {index}".strip()
+        if marketplace == "etsy":
+            return f"{title_root} Gift Ready Listing {index}".strip()
         if marketplace == "tiktok":
             return f"{title_root} Trend Pick {index}".strip()
         return f"{title_root} Storefront Feature {index}".strip()
@@ -160,6 +168,8 @@ class MarketResearchService:
             attributes.setdefault("category", core_data.category)
         if marketplace == "ebay":
             attributes.setdefault("Condition", "New")
+        if marketplace == "etsy":
+            attributes.setdefault("occasion", "gift")
         if marketplace == "tiktok":
             attributes.setdefault("hook", "visual commerce")
         if marketplace == "shopify":
@@ -182,6 +192,8 @@ class MarketResearchService:
             observations.append("Feature-led bullets and searchable modifiers are common.")
         elif marketplace == "ebay":
             observations.append("Structured item specifics drive discoverability.")
+        elif marketplace == "etsy":
+            observations.append("Keyword-rich descriptive phrasing and gift intent are common.")
         elif marketplace == "tiktok":
             observations.append("Short hooks and visual-first phrasing outperform longer copy.")
         else:
