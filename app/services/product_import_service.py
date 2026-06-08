@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import io
 import re
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -252,15 +251,16 @@ class ProductImportService:
         )
 
     def _mark_duplicates(self, rows: list[ImportedProductRow], existing_titles: set[str]) -> None:
-        sku_counts = Counter(row.sku.strip().lower() for row in rows if row.sku.strip())
-        title_counts = Counter(row.title.strip().lower() for row in rows if row.title.strip())
+        seen_skus: set[str] = set()
+        seen_titles: set[str] = set()
         for row in rows:
             duplicate = False
-            if row.sku and sku_counts[row.sku.strip().lower()] > 1:
+            normalized_sku = row.sku.strip().lower()
+            normalized_title = row.title.strip().lower()
+            if normalized_sku and normalized_sku in seen_skus:
                 duplicate = True
                 row.notes.append("Duplicate SKU found in uploaded file.")
-            normalized_title = row.title.strip().lower()
-            if normalized_title and title_counts[normalized_title] > 1:
+            if normalized_title and normalized_title in seen_titles:
                 duplicate = True
                 row.notes.append("Duplicate title found in uploaded file.")
             if normalized_title and normalized_title in existing_titles:
@@ -268,6 +268,10 @@ class ProductImportService:
                 row.notes.append("A product with the same title already exists in the catalog.")
             if duplicate and row.status != "parse_issue":
                 row.status = "duplicate"
+            if normalized_sku:
+                seen_skus.add(normalized_sku)
+            if normalized_title:
+                seen_titles.add(normalized_title)
 
     @staticmethod
     def _row_has_data(row: ImportedProductRow) -> tuple[bool, ...]:

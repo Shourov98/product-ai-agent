@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from math import ceil
 
 from pydantic import ValidationError
 
-from app.schemas.response import ProductListItemResponse, ProductRecordResponse
+from app.schemas.response import PaginatedProductListResponse, PaginationMetaResponse, ProductListItemResponse, ProductRecordResponse
 
 
 class ProductStore:
@@ -50,6 +51,22 @@ class ProductStore:
                 )
             )
         return sorted(records, key=lambda item: item.updated_at, reverse=True)
+
+    def list_paginated(self, *, page: int, page_size: int, user_id: str | None = None) -> PaginatedProductListResponse:
+        records = self.list(user_id=user_id)
+        total_items = len(records)
+        total_pages = ceil(total_items / page_size) if total_items else 0
+        start = (page - 1) * page_size
+        end = start + page_size
+        return PaginatedProductListResponse(
+            items=records[start:end],
+            pagination=PaginationMetaResponse(
+                page=page,
+                page_size=page_size,
+                total_items=total_items,
+                total_pages=total_pages,
+            ),
+        )
 
     def get_product_dir(self, product_id: str) -> Path:
         record_path = self._find_record_path(product_id)

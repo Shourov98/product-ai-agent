@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 
 from app.auth import AuthenticatedUser, get_optional_current_user
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
-from app.schemas.imports import ImportListItemResponse, ImportRecordResponse, ImportUploadResponse, UploadImportAsProductResponse
+from app.schemas.imports import DuplicateGroupResponse, ImportRecordResponse, ImportUploadResponse, PaginatedImportListResponse, UploadImportAsProductResponse
 from app.schemas.repricing import ProductRepricingRequest, ProductRepricingResponse
 from app.schemas.request import MarketplaceRequestLiteral, ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
-from app.schemas.response import ProductListItemResponse, ProductPipelineResponse, ProductRecordResponse
+from app.schemas.response import PaginatedProductListResponse, ProductPipelineResponse, ProductRecordResponse
 from app.services.image_service import ImagePayload
 from app.services.import_service import ImportService
 from app.services.product_service import ProductService
@@ -107,14 +107,16 @@ async def upload_product_import(
 
 @router.get(
     "/imports/products",
-    response_model=list[ImportListItemResponse],
+    response_model=PaginatedImportListResponse,
     status_code=status.HTTP_200_OK,
 )
 async def list_product_imports(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
-) -> list[ImportListItemResponse]:
+) -> PaginatedImportListResponse:
     service = ImportService()
-    return service.list_imports(current_user=current_user)
+    return service.list_imports_paginated(page=page, page_size=page_size, current_user=current_user)
 
 
 @router.get(
@@ -244,15 +246,43 @@ async def upload_product_import_as_product(
 
 
 @router.get(
+    "/imports/products/{record_id}/duplicates",
+    response_model=DuplicateGroupResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_product_import_duplicates(
+    record_id: str,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> DuplicateGroupResponse:
+    service = ImportService()
+    return service.get_duplicate_group(record_id, current_user=current_user)
+
+
+@router.post(
+    "/imports/products/{record_id}/duplicates/promote",
+    response_model=DuplicateGroupResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def promote_product_import_duplicate(
+    record_id: str,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> DuplicateGroupResponse:
+    service = ImportService()
+    return service.promote_duplicate_to_primary(record_id, current_user=current_user)
+
+
+@router.get(
     "/products",
-    response_model=list[ProductListItemResponse],
+    response_model=PaginatedProductListResponse,
     status_code=status.HTTP_200_OK,
 )
 async def list_products(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
-) -> list[ProductListItemResponse]:
+) -> PaginatedProductListResponse:
     service = ProductService()
-    return service.list_products(current_user=current_user)
+    return service.list_products_paginated(page=page, page_size=page_size, current_user=current_user)
 
 
 @router.get(

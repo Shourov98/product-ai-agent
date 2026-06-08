@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.response import MarketplaceVariantsResponse, ProductPipelineResponse, ProductRecordResponse
+from app.schemas.response import MarketplaceVariantsResponse, PaginationMetaResponse, ProductPipelineResponse, ProductRecordResponse
 
 
 ImportSourceType = Literal["csv", "excel", "pdf"]
@@ -68,6 +68,10 @@ class ImportRecordResponse(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     missing_fields: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    duplicate_group_key: str | None = None
+    primary_record_id: str | None = None
+    duplicate_count: int = Field(default=0, ge=0)
+    can_upload_as_product: bool = True
     linked_product_id: str | None = None
     product: ProductPipelineResponse
     variants: MarketplaceVariantsResponse = Field(default_factory=MarketplaceVariantsResponse)
@@ -85,8 +89,21 @@ class ImportListItemResponse(BaseModel):
     linked_product_id: str | None = None
     missing_fields: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    primary_record_id: str | None = None
+    duplicate_count: int = Field(default=0, ge=0)
+    can_upload_as_product: bool = True
 
 
 class UploadImportAsProductResponse(BaseModel):
     import_record: ImportRecordResponse
     product_record: ProductRecordResponse
+
+
+class DuplicateGroupResponse(BaseModel):
+    primary: ImportRecordResponse
+    duplicates: list[ImportRecordResponse] = Field(default_factory=list)
+
+
+class PaginatedImportListResponse(BaseModel):
+    items: list[ImportListItemResponse] = Field(default_factory=list)
+    pagination: PaginationMetaResponse

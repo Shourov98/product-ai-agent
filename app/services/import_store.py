@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from math import ceil
 from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
-from app.schemas.imports import ImportListItemResponse, ImportRecordResponse
+from app.schemas.imports import ImportListItemResponse, ImportRecordResponse, PaginatedImportListResponse
+from app.schemas.response import PaginationMetaResponse
 
 
 class ImportStore:
@@ -27,14 +29,19 @@ class ImportStore:
             return None
         return self._load(path)
 
-    def list(self, *, user_id: str | None = None) -> list[ImportListItemResponse]:
+    def list_records(self, *, user_id: str | None = None) -> list[ImportRecordResponse]:
         del user_id
-        records: list[ImportListItemResponse] = []
+        records: list[ImportRecordResponse] = []
         for path in sorted(self.base_dir.glob("*.json")):
             try:
-                record = self._load(path)
+                records.append(self._load(path))
             except ValidationError:
                 continue
+        return sorted(records, key=lambda item: item.updated_at, reverse=True)
+
+    def list(self, *, user_id: str | None = None) -> list[ImportListItemResponse]:
+        records: list[ImportListItemResponse] = []
+        for record in self.list_records(user_id=user_id):
             records.append(
                 ImportListItemResponse(
                     id=record.id,
@@ -48,9 +55,26 @@ class ImportStore:
                     linked_product_id=record.linked_product_id,
                     missing_fields=record.missing_fields,
                     notes=record.notes,
+                    primary_record_id=record.primary_record_id,
                 )
             )
-        return sorted(records, key=lambda item: item.updated_at, reverse=True)
+        return records
+
+    def list_paginated(self, *, page: int, page_size: int, user_id: str | None = None) -> PaginatedImportListResponse:
+        records = self.list(user_id=user_id)
+        total_items = len(records)
+        total_pages = ceil(total_items / page_size) if total_items else 0
+        start = (page - 1) * page_size
+        end = start + page_size
+        return PaginatedImportListResponse(
+            items=records[start:end],
+            pagination=PaginationMetaResponse(
+                page=page,
+                page_size=page_size,
+                total_items=total_items,
+                total_pages=total_pages,
+            ),
+        )
 
     def delete(self, record_id: str, *, user_id: str | None = None) -> None:
         del user_id

@@ -295,3 +295,15 @@ class ProductListItemResponse(BaseModel):
     category: str
     product_type: str
     preview_image_path: str
+
+
+class PaginationMetaResponse(BaseModel):
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    total_items: int = Field(ge=0)
+    total_pages: int = Field(ge=0)
+
+
+class PaginatedProductListResponse(BaseModel):
+    items: list[ProductListItemResponse] = Field(default_factory=list)
+    pagination: PaginationMetaResponse

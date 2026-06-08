@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import HTTPException, status
 
 from app.auth import AuthenticatedUser
-from app.schemas.imports import ImportRecordResponse, ImportUploadResponse, ImportedProductRow, UploadImportAsProductResponse
+from app.schemas.imports import DuplicateGroupResponse, ImportListItemResponse, ImportRecordResponse, ImportUploadResponse, ImportedProductRow, PaginatedImportListResponse, UploadImportAsProductResponse
 from app.schemas.request import MarketplaceRequestLiteral, ProductOptimizationRequest, ProductUpdateRequest
 from app.schemas.response import MarketplaceVariantsResponse, ProductPipelineResponse
 from app.services.image_service import ImagePayload
@@ -41,28 +41,98 @@ class ImportService:
     ) -> ImportUploadResponse:
         existing_titles = {item.normalized_title.strip().lower() for item in self.product_service.list_products(current_user=current_user)}
         preview = self.parser.parse_file(filename=filename, payload=payload, existing_titles=existing_titles)
-        records = [
-            self._save_row_as_import_record(
-                filename=filename,
-                row=row,
-                current_user=current_user,
+        existing_records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
+        primary_by_fingerprint: dict[str, str] = {}
+        for record in sorted(existing_records, key=lambda item: (item.created_at, item.id)):
+            fingerprint = self._fingerprint_for_record(record)
+            if not fingerprint:
+                continue
+            primary_by_fingerprint.setdefault(fingerprint, record.primary_record_id or record.id)
+
+        records: list[ImportRecordResponse] = []
+        for row in preview.rows:
+            fingerprint = self._fingerprint_for_row(row)
+            primary_record_id = primary_by_fingerprint.get(fingerprint) if fingerprint else None
+            records.append(
+                self._save_row_as_import_record(
+                    filename=filename,
+                    row=row,
+                    primary_record_id=primary_record_id,
+                    current_user=current_user,
+                )
             )
-            for row in preview.rows
-        ]
+            if fingerprint and primary_record_id is None and records[-1].status != "parse_issue":
+                primary_by_fingerprint[fingerprint] = records[-1].id
         return ImportUploadResponse(imported_count=len(records), records=records)
 
-    def list_imports(self, current_user: AuthenticatedUser | None = None):
-        return self.store.list(user_id=current_user.user_id if current_user is not None else None)
+    def list_imports(self, current_user: AuthenticatedUser | None = None) -> list[ImportListItemResponse]:
+        records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
+        return self._build_list_items(records)
+
+    def list_imports_paginated(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        current_user: AuthenticatedUser | None = None,
+    ) -> PaginatedImportListResponse:
+        records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
+        items = self._build_list_items(records)
+        total_items = len(items)
+        total_pages = (total_items + page_size - 1) // page_size if total_items else 0
+        start = (page - 1) * page_size
+        end = start + page_size
+        from app.schemas.response import PaginationMetaResponse
+
+        return PaginatedImportListResponse(
+            items=items[start:end],
+            pagination=PaginationMetaResponse(
+                page=page,
+                page_size=page_size,
+                total_items=total_items,
+                total_pages=total_pages,
+            ),
+        )
 
     def get_import(self, record_id: str, current_user: AuthenticatedUser | None = None) -> ImportRecordResponse:
         record = self.store.get(record_id, user_id=current_user.user_id if current_user is not None else None)
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import record not found.")
-        return record
+        all_records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
+        return self._enrich_record(record, all_records)
 
     def delete_import(self, record_id: str, current_user: AuthenticatedUser | None = None) -> None:
-        self.get_import(record_id, current_user=current_user)
+        record = self.get_import(record_id, current_user=current_user)
+        all_records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
+        group_records = self._group_records_for(record, all_records)
         self.store.delete(record_id, user_id=current_user.user_id if current_user is not None else None)
+        if record.primary_record_id is None and group_records:
+            remaining = [item for item in group_records if item.id != record.id]
+            if remaining:
+                promoted = min(remaining, key=lambda item: (item.created_at, item.id))
+                self._promote_group_primary(promoted.id, remaining, current_user=current_user)
+
+    def get_duplicate_group(self, record_id: str, current_user: AuthenticatedUser | None = None) -> DuplicateGroupResponse:
+        record = self.get_import(record_id, current_user=current_user)
+        all_records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
+        group_records = self._group_records_for(record, all_records)
+        if len(group_records) <= 1:
+            if record.duplicate_group_key:
+                primary = self._enrich_record(record, all_records)
+                return DuplicateGroupResponse(primary=primary, duplicates=[])
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No duplicate group found for this record.")
+        primary = next((item for item in group_records if item.primary_record_id is None), record)
+        primary = self._enrich_record(primary, all_records)
+        duplicates = [self._enrich_record(item, all_records) for item in group_records if item.id != primary.id]
+        return DuplicateGroupResponse(primary=primary, duplicates=duplicates)
+
+    def promote_duplicate_to_primary(self, record_id: str, current_user: AuthenticatedUser | None = None) -> DuplicateGroupResponse:
+        record = self.get_import(record_id, current_user=current_user)
+        all_records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
+        group_records = self._group_records_for(record, all_records)
+        if len(group_records) <= 1:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No duplicate group found for this record.")
+        return self._promote_group_primary(record.id, group_records, current_user=current_user)
 
     async def upload_source_image(
         self,
@@ -230,6 +300,11 @@ class ImportService:
         if record.linked_product_id:
             product_record = self.product_service.get_product(record.linked_product_id, current_user=current_user)
             return UploadImportAsProductResponse(import_record=record, product_record=product_record)
+        if record.primary_record_id is not None or record.duplicate_count > 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Resolve this duplicate group before uploading this import record as a product.",
+            )
         product_record = self.product_service.create_product_from_pipeline(
             product=record.product,
             current_user=current_user,
@@ -243,13 +318,15 @@ class ImportService:
             }
         )
         self.store.save(updated_import, user_id=current_user.user_id if current_user is not None else None)
-        return UploadImportAsProductResponse(import_record=updated_import, product_record=product_record)
+        all_records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
+        return UploadImportAsProductResponse(import_record=self._enrich_record(updated_import, all_records), product_record=product_record)
 
     def _save_row_as_import_record(
         self,
         *,
         filename: str,
         row: ImportedProductRow,
+        primary_record_id: str | None = None,
         current_user: AuthenticatedUser | None = None,
     ) -> ImportRecordResponse:
         product = self.product_service.build_imported_product(
@@ -266,11 +343,13 @@ class ImportService:
             material=row.material,
             image_url=row.image_url,
         )
-        mapped_status = "imported" if row.status == "ready" else "needs_review"
-        if row.status == "duplicate":
+        duplicate_group_key = self._fingerprint_for_row(row)
+        mapped_status = self._status_from_row(row)
+        notes = list(row.notes)
+        if primary_record_id is not None and row.status != "parse_issue":
             mapped_status = "duplicate"
-        if row.status == "parse_issue":
-            mapped_status = "parse_issue"
+            notes = [note for note in notes if note != "Duplicate title found in uploaded file." and note != "Duplicate SKU found in uploaded file."]
+            notes.append("This import record duplicates an earlier imported record.")
         record = ImportRecordResponse(
             id=uuid4().hex,
             status=mapped_status,  # type: ignore[arg-type]
@@ -281,7 +360,11 @@ class ImportService:
             source_reference=row.source_reference,
             confidence=row.confidence,
             missing_fields=row.missing_fields,
-            notes=row.notes,
+            notes=notes,
+            duplicate_group_key=duplicate_group_key,
+            primary_record_id=primary_record_id,
+            duplicate_count=0,
+            can_upload_as_product=primary_record_id is None,
             linked_product_id=None,
             product=product,
             variants=MarketplaceVariantsResponse(),
@@ -340,25 +423,10 @@ class ImportService:
         current_user: AuthenticatedUser | None = None,
     ) -> ImportRecordResponse:
         missing_fields = self._build_missing_fields(product)
-        existing_titles = {
-            item.normalized_title.strip().lower()
-            for item in self.product_service.list_products(current_user=current_user)
-            if not record.linked_product_id or item.id != record.linked_product_id
-        }
-        normalized_title = product.core.normalized_title.strip().lower()
-        duplicate = bool(normalized_title) and normalized_title in existing_titles
-
-        next_status = "uploaded" if record.linked_product_id else "imported"
-        if not product.core.normalized_title.strip():
-            next_status = "parse_issue"
-        elif duplicate:
+        notes = list(record.notes)
+        next_status = self._normal_status_for(product=product, linked_product_id=record.linked_product_id)
+        if record.primary_record_id is not None:
             next_status = "duplicate"
-        elif missing_fields:
-            next_status = "needs_review"
-
-        notes = [note for note in record.notes if note != "Title matches an existing saved product."]
-        if duplicate:
-            notes.append("Title matches an existing saved product.")
 
         return record.model_copy(
             update={
@@ -369,6 +437,127 @@ class ImportService:
                 "updated_at": self._timestamp(),
             }
         )
+
+    def _promote_group_primary(
+        self,
+        primary_record_id: str,
+        group_records: list[ImportRecordResponse],
+        *,
+        current_user: AuthenticatedUser | None = None,
+    ) -> DuplicateGroupResponse:
+        primary = next((item for item in group_records if item.id == primary_record_id), None)
+        if primary is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Primary duplicate candidate not found.")
+
+        updated_records: list[ImportRecordResponse] = []
+        for record in group_records:
+            if record.id == primary.id:
+                updated = record.model_copy(
+                    update={
+                        "primary_record_id": None,
+                        "status": self._normal_status_for(product=record.product, linked_product_id=record.linked_product_id),
+                        "notes": [note for note in record.notes if note != "This import record duplicates an earlier imported record."],
+                        "updated_at": self._timestamp(),
+                    }
+                )
+            else:
+                notes = [note for note in record.notes if note != "This import record duplicates an earlier imported record."]
+                notes.append("This import record duplicates an earlier imported record.")
+                updated = record.model_copy(
+                    update={
+                        "primary_record_id": primary.id,
+                        "status": "duplicate",
+                        "notes": notes,
+                        "updated_at": self._timestamp(),
+                    }
+                )
+            self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
+            updated_records.append(updated)
+
+        primary_updated = next(item for item in updated_records if item.id == primary.id)
+        duplicates = [item for item in updated_records if item.id != primary.id]
+        return DuplicateGroupResponse(primary=primary_updated, duplicates=duplicates)
+
+    def _build_list_items(self, records: list[ImportRecordResponse]) -> list[ImportListItemResponse]:
+        items: list[ImportListItemResponse] = []
+        for record in records:
+            enriched = self._enrich_record(record, records)
+            items.append(
+                ImportListItemResponse(
+                    id=enriched.id,
+                    status=enriched.status,
+                    created_at=enriched.created_at,
+                    updated_at=enriched.updated_at,
+                    normalized_title=enriched.product.core.normalized_title,
+                    category=enriched.product.core.category,
+                    product_type=enriched.product.core.product_type,
+                    preview_image_path=enriched.product.images.source.absolute_path or enriched.product.images.shopify.absolute_path,
+                    linked_product_id=enriched.linked_product_id,
+                    missing_fields=enriched.missing_fields,
+                    notes=enriched.notes,
+                    primary_record_id=enriched.primary_record_id,
+                    duplicate_count=enriched.duplicate_count,
+                    can_upload_as_product=enriched.can_upload_as_product,
+                )
+            )
+        return items
+
+    def _group_records_for(self, record: ImportRecordResponse, records: list[ImportRecordResponse]) -> list[ImportRecordResponse]:
+        primary_id = record.primary_record_id or record.id
+        group_key = record.duplicate_group_key or self._fingerprint_for_record(record)
+        grouped = [
+            item
+            for item in records
+            if (item.id == primary_id or item.primary_record_id == primary_id)
+            or (group_key and item.duplicate_group_key == group_key)
+        ]
+        unique = {item.id: item for item in grouped}
+        return sorted(unique.values(), key=lambda item: (item.created_at, item.id))
+
+    def _enrich_record(self, record: ImportRecordResponse, records: list[ImportRecordResponse]) -> ImportRecordResponse:
+        group_records = self._group_records_for(record, records)
+        duplicate_count = max(len(group_records) - 1, 0)
+        can_upload_as_product = record.primary_record_id is None and duplicate_count == 0 and not record.linked_product_id
+        return record.model_copy(
+            update={
+                "duplicate_count": duplicate_count,
+                "can_upload_as_product": can_upload_as_product,
+            }
+        )
+
+    @staticmethod
+    def _fingerprint_for_row(row: ImportedProductRow) -> str | None:
+        title = row.title.strip().lower()
+        sku = row.sku.strip().lower()
+        if not title and not sku:
+            return None
+        return f"{title}::{sku}"
+
+    @staticmethod
+    def _fingerprint_for_record(record: ImportRecordResponse) -> str | None:
+        title = record.product.core.normalized_title.strip().lower()
+        sku = str(record.product.core.attributes.get("sku", "")).strip().lower()
+        if not title and not sku:
+            return None
+        return f"{title}::{sku}"
+
+    @staticmethod
+    def _status_from_row(row: ImportedProductRow) -> str:
+        if row.status == "parse_issue":
+            return "parse_issue"
+        if row.status == "ready":
+            return "imported"
+        return "needs_review"
+
+    @staticmethod
+    def _normal_status_for(*, product: ProductPipelineResponse, linked_product_id: str | None) -> str:
+        if linked_product_id:
+            return "uploaded"
+        if not product.core.normalized_title.strip():
+            return "parse_issue"
+        if ImportService._build_missing_fields(product):
+            return "needs_review"
+        return "imported"
 
     @staticmethod
     def _build_missing_fields(product: ProductPipelineResponse) -> list[str]:

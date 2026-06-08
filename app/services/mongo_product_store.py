@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from math import ceil
 
 from pymongo import DESCENDING, MongoClient
 from pydantic import ValidationError
 
-from app.schemas.response import ProductListItemResponse, ProductRecordResponse
+from app.schemas.response import PaginatedProductListResponse, PaginationMetaResponse, ProductListItemResponse, ProductRecordResponse
 
 
 class MongoProductStore:
@@ -16,10 +17,12 @@ class MongoProductStore:
         mongodb_uri: str,
         db_name: str,
         products_collection: str,
+        imports_collection: str | None = None,
     ) -> None:
         self.client = MongoClient(mongodb_uri)
         self.database = self.client[db_name]
         self.collection = self.database[products_collection]
+        self.imports_collection = self.database[imports_collection] if imports_collection else None
         self.collection.create_index([("id", 1)], unique=True)
         self.collection.create_index([("user_id", 1), ("updated_at", -1)])
 
@@ -44,6 +47,7 @@ class MongoProductStore:
         if user_id is not None:
             query["user_id"] = user_id
 
+        linked_product_ids, pending_import_fingerprints = self._import_visibility_filters(user_id=user_id)
         records: list[ProductListItemResponse] = []
         for payload in self.collection.find(query).sort("updated_at", DESCENDING):
             payload.pop("_id", None)
@@ -51,6 +55,8 @@ class MongoProductStore:
             try:
                 record = ProductRecordResponse.model_validate(payload)
             except ValidationError:
+                continue
+            if self._should_hide_record(record, linked_product_ids, pending_import_fingerprints):
                 continue
             records.append(
                 ProductListItemResponse(
@@ -65,6 +71,63 @@ class MongoProductStore:
                 )
             )
         return records
+
+    def list_paginated(self, *, page: int, page_size: int, user_id: str | None = None) -> PaginatedProductListResponse:
+        records = self.list(user_id=user_id)
+        total_items = len(records)
+        total_pages = ceil(total_items / page_size) if total_items else 0
+        start = (page - 1) * page_size
+        end = start + page_size
+        return PaginatedProductListResponse(
+            items=records[start:end],
+            pagination=PaginationMetaResponse(
+                page=page,
+                page_size=page_size,
+                total_items=total_items,
+                total_pages=total_pages,
+            ),
+        )
+
+    def _import_visibility_filters(self, *, user_id: str | None = None) -> tuple[set[str], set[tuple[str, str]]]:
+        if self.imports_collection is None:
+            return set(), set()
+
+        query: dict[str, Any] = {}
+        if user_id is not None:
+            query["user_id"] = user_id
+
+        linked_product_ids: set[str] = set()
+        pending_import_fingerprints: set[tuple[str, str]] = set()
+        for payload in self.imports_collection.find(query, {"linked_product_id": 1, "status": 1, "product.core.normalized_title": 1, "product.core.attributes": 1}):
+            linked_product_id = payload.get("linked_product_id")
+            if isinstance(linked_product_id, str) and linked_product_id.strip():
+                linked_product_ids.add(linked_product_id.strip())
+
+            if payload.get("status") == "uploaded":
+                continue
+
+            product = payload.get("product", {})
+            core = product.get("core", {})
+            attributes = core.get("attributes", {}) or {}
+            title = str(core.get("normalized_title", "")).strip().lower()
+            sku = str(attributes.get("sku", "")).strip().lower()
+            if title:
+                pending_import_fingerprints.add((title, sku))
+
+        return linked_product_ids, pending_import_fingerprints
+
+    @staticmethod
+    def _should_hide_record(
+        record: ProductRecordResponse,
+        linked_product_ids: set[str],
+        pending_import_fingerprints: set[tuple[str, str]],
+    ) -> bool:
+        if record.id in linked_product_ids:
+            return False
+
+        title = record.product.core.normalized_title.strip().lower()
+        sku = str(record.product.core.attributes.get("sku", "")).strip().lower()
+        return bool(title) and (title, sku) in pending_import_fingerprints
 
     def get_product_dir(self, product_id: str) -> Path:
         payload = self.collection.find_one({"id": product_id}, {"run_id": 1})

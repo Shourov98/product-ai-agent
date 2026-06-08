@@ -37,6 +37,7 @@ from app.schemas.response import (
     MarketplaceResearchResponse,
     MarketResearchBundleResponse,
     MarketplaceVariantsResponse,
+    PaginatedProductListResponse,
     PipelineValidationResponse,
     PricingInsightsResponse,
     ProductListItemResponse,
@@ -67,6 +68,7 @@ class ProductService:
                 mongodb_uri=settings.mongodb_uri,
                 db_name=settings.mongodb_db_name,
                 products_collection=settings.mongodb_products_collection,
+                imports_collection=settings.mongodb_imports_collection,
             )
             if settings.mongodb_uri and settings.mongodb_enabled
             else ProductStore(settings.output_dir)
@@ -259,6 +261,19 @@ class ProductService:
 
     def list_products(self, current_user: AuthenticatedUser | None = None) -> list[ProductListItemResponse]:
         return self.store.list(user_id=current_user.user_id if current_user is not None else None)
+
+    def list_products_paginated(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        current_user: AuthenticatedUser | None = None,
+    ) -> PaginatedProductListResponse:
+        return self.store.list_paginated(
+            page=page,
+            page_size=page_size,
+            user_id=current_user.user_id if current_user is not None else None,
+        )
 
     def get_product(self, product_id: str, current_user: AuthenticatedUser | None = None) -> ProductRecordResponse:
         record = self.store.get(product_id, user_id=current_user.user_id if current_user is not None else None)
