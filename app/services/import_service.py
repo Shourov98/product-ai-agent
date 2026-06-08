@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import HTTPException, status
 
 from app.auth import AuthenticatedUser
-from app.schemas.imports import DuplicateGroupResponse, ImportListItemResponse, ImportRecordResponse, ImportUploadResponse, ImportedProductRow, PaginatedImportListResponse, UploadImportAsProductResponse
+from app.schemas.imports import CatalogConflictProductResponse, DuplicateResolutionResponse, ImportListItemResponse, ImportRecordResponse, ImportUploadResponse, ImportedProductRow, PaginatedImportListResponse, UploadImportAsProductResponse
 from app.schemas.request import MarketplaceRequestLiteral, ProductOptimizationRequest, ProductUpdateRequest
 from app.schemas.response import MarketplaceVariantsResponse, ProductPipelineResponse
 from app.services.image_service import ImagePayload
@@ -18,10 +18,15 @@ from app.services.product_service import ProductService
 
 
 class ImportService:
+    _shared_product_service = None
+    _shared_store = None
+    _shared_parser = None
+
     def __init__(self) -> None:
-        self.product_service = ProductService()
+        self.product_service = self._shared_product_service or ProductService()
+        self.__class__._shared_product_service = self.product_service
         settings = self.product_service.settings
-        self.store = (
+        self.store = self._shared_store or (
             MongoImportStore(
                 mongodb_uri=settings.mongodb_uri,
                 db_name=settings.mongodb_db_name,
@@ -30,7 +35,20 @@ class ImportService:
             if settings.mongodb_uri and settings.mongodb_enabled
             else ImportStore(settings.import_store_dir)
         )
-        self.parser = ProductImportService()
+        self.__class__._shared_store = self.store
+        self.parser = self._shared_parser or ProductImportService()
+        self.__class__._shared_parser = self.parser
+
+    @classmethod
+    def reset_shared_state(cls) -> None:
+        store = cls._shared_store
+        close = getattr(store, "close", None)
+        if callable(close):
+            close()
+
+        cls._shared_product_service = None
+        cls._shared_store = None
+        cls._shared_parser = None
 
     def upload_file(
         self,
@@ -39,7 +57,15 @@ class ImportService:
         payload: bytes,
         current_user: AuthenticatedUser | None = None,
     ) -> ImportUploadResponse:
-        existing_titles = {item.normalized_title.strip().lower() for item in self.product_service.list_products(current_user=current_user)}
+        existing_products = self.product_service.list_products(current_user=current_user)
+        existing_titles = {item.normalized_title.strip().lower() for item in existing_products}
+        existing_products_by_title: dict[str, list[str]] = {}
+        for item in existing_products:
+            key = item.normalized_title.strip().lower()
+            if not key:
+                continue
+            existing_products_by_title.setdefault(key, []).append(item.id)
+
         preview = self.parser.parse_file(filename=filename, payload=payload, existing_titles=existing_titles)
         existing_records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
         primary_by_fingerprint: dict[str, str] = {}
@@ -58,6 +84,7 @@ class ImportService:
                     filename=filename,
                     row=row,
                     primary_record_id=primary_record_id,
+                    catalog_conflict_product_ids=existing_products_by_title.get(row.title.strip().lower(), []),
                     current_user=current_user,
                 )
             )
@@ -67,7 +94,7 @@ class ImportService:
 
     def list_imports(self, current_user: AuthenticatedUser | None = None) -> list[ImportListItemResponse]:
         records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
-        return self._build_list_items(records)
+        return self._build_list_items(records, current_user=current_user)
 
     def list_imports_paginated(
         self,
@@ -77,7 +104,7 @@ class ImportService:
         current_user: AuthenticatedUser | None = None,
     ) -> PaginatedImportListResponse:
         records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
-        items = self._build_list_items(records)
+        items = self._build_list_items(records, current_user=current_user)
         total_items = len(items)
         total_pages = (total_items + page_size - 1) // page_size if total_items else 0
         start = (page - 1) * page_size
@@ -112,21 +139,29 @@ class ImportService:
                 promoted = min(remaining, key=lambda item: (item.created_at, item.id))
                 self._promote_group_primary(promoted.id, remaining, current_user=current_user)
 
-    def get_duplicate_group(self, record_id: str, current_user: AuthenticatedUser | None = None) -> DuplicateGroupResponse:
+    def get_duplicate_group(self, record_id: str, current_user: AuthenticatedUser | None = None) -> DuplicateResolutionResponse:
         record = self.get_import(record_id, current_user=current_user)
         all_records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
         group_records = self._group_records_for(record, all_records)
         if len(group_records) <= 1:
+            catalog_conflict_ids = self._resolve_catalog_conflict_ids(record, current_user=current_user)
+            if catalog_conflict_ids:
+                primary = self._enrich_record(record, all_records)
+                return DuplicateResolutionResponse(
+                    kind="catalog_conflict",
+                    primary=primary,
+                    catalog_matches=self._catalog_conflict_matches(catalog_conflict_ids, current_user=current_user),
+                )
             if record.duplicate_group_key:
                 primary = self._enrich_record(record, all_records)
-                return DuplicateGroupResponse(primary=primary, duplicates=[])
+                return DuplicateResolutionResponse(kind="import_group", primary=primary, duplicates=[])
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No duplicate group found for this record.")
         primary = next((item for item in group_records if item.primary_record_id is None), record)
         primary = self._enrich_record(primary, all_records)
         duplicates = [self._enrich_record(item, all_records) for item in group_records if item.id != primary.id]
-        return DuplicateGroupResponse(primary=primary, duplicates=duplicates)
+        return DuplicateResolutionResponse(kind="import_group", primary=primary, duplicates=duplicates)
 
-    def promote_duplicate_to_primary(self, record_id: str, current_user: AuthenticatedUser | None = None) -> DuplicateGroupResponse:
+    def promote_duplicate_to_primary(self, record_id: str, current_user: AuthenticatedUser | None = None) -> DuplicateResolutionResponse:
         record = self.get_import(record_id, current_user=current_user)
         all_records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
         group_records = self._group_records_for(record, all_records)
@@ -327,6 +362,7 @@ class ImportService:
         filename: str,
         row: ImportedProductRow,
         primary_record_id: str | None = None,
+        catalog_conflict_product_ids: list[str] | None = None,
         current_user: AuthenticatedUser | None = None,
     ) -> ImportRecordResponse:
         product = self.product_service.build_imported_product(
@@ -350,6 +386,7 @@ class ImportService:
             mapped_status = "duplicate"
             notes = [note for note in notes if note != "Duplicate title found in uploaded file." and note != "Duplicate SKU found in uploaded file."]
             notes.append("This import record duplicates an earlier imported record.")
+        catalog_conflict_ids = catalog_conflict_product_ids or []
         record = ImportRecordResponse(
             id=uuid4().hex,
             status=mapped_status,  # type: ignore[arg-type]
@@ -365,6 +402,7 @@ class ImportService:
             primary_record_id=primary_record_id,
             duplicate_count=0,
             can_upload_as_product=primary_record_id is None,
+            catalog_conflict_product_ids=catalog_conflict_ids,
             linked_product_id=None,
             product=product,
             variants=MarketplaceVariantsResponse(),
@@ -444,7 +482,7 @@ class ImportService:
         group_records: list[ImportRecordResponse],
         *,
         current_user: AuthenticatedUser | None = None,
-    ) -> DuplicateGroupResponse:
+    ) -> DuplicateResolutionResponse:
         primary = next((item for item in group_records if item.id == primary_record_id), None)
         if primary is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Primary duplicate candidate not found.")
@@ -476,12 +514,18 @@ class ImportService:
 
         primary_updated = next(item for item in updated_records if item.id == primary.id)
         duplicates = [item for item in updated_records if item.id != primary.id]
-        return DuplicateGroupResponse(primary=primary_updated, duplicates=duplicates)
+        return DuplicateResolutionResponse(kind="import_group", primary=primary_updated, duplicates=duplicates)
 
-    def _build_list_items(self, records: list[ImportRecordResponse]) -> list[ImportListItemResponse]:
+    def _build_list_items(
+        self,
+        records: list[ImportRecordResponse],
+        *,
+        current_user: AuthenticatedUser | None = None,
+    ) -> list[ImportListItemResponse]:
+        del current_user
         items: list[ImportListItemResponse] = []
         for record in records:
-            enriched = self._enrich_record(record, records)
+            enriched = self._enrich_record(record, records, include_catalog_fallback=False)
             items.append(
                 ImportListItemResponse(
                     id=enriched.id,
@@ -498,6 +542,7 @@ class ImportService:
                     primary_record_id=enriched.primary_record_id,
                     duplicate_count=enriched.duplicate_count,
                     can_upload_as_product=enriched.can_upload_as_product,
+                    catalog_conflict_product_ids=enriched.catalog_conflict_product_ids,
                 )
             )
         return items
@@ -509,21 +554,100 @@ class ImportService:
             item
             for item in records
             if (item.id == primary_id or item.primary_record_id == primary_id)
-            or (group_key and item.duplicate_group_key == group_key)
+            or (
+                group_key
+                and (
+                    item.duplicate_group_key == group_key
+                    or self._fingerprint_for_record(item) == group_key
+                )
+            )
         ]
         unique = {item.id: item for item in grouped}
         return sorted(unique.values(), key=lambda item: (item.created_at, item.id))
 
-    def _enrich_record(self, record: ImportRecordResponse, records: list[ImportRecordResponse]) -> ImportRecordResponse:
+    def _enrich_record(
+        self,
+        record: ImportRecordResponse,
+        records: list[ImportRecordResponse],
+        *,
+        catalog_product_ids_by_title: dict[str, list[str]] | None = None,
+        include_catalog_fallback: bool = True,
+    ) -> ImportRecordResponse:
         group_records = self._group_records_for(record, records)
         duplicate_count = max(len(group_records) - 1, 0)
-        can_upload_as_product = record.primary_record_id is None and duplicate_count == 0 and not record.linked_product_id
+        catalog_conflict_ids = self._resolve_catalog_conflict_ids(
+            record,
+            catalog_product_ids_by_title=catalog_product_ids_by_title,
+            use_fallback_lookup=include_catalog_fallback,
+        )
+        can_upload_as_product = record.primary_record_id is None and duplicate_count == 0 and not record.linked_product_id and not catalog_conflict_ids
         return record.model_copy(
             update={
                 "duplicate_count": duplicate_count,
                 "can_upload_as_product": can_upload_as_product,
+                "catalog_conflict_product_ids": catalog_conflict_ids,
             }
         )
+
+    def _catalog_conflict_matches(
+        self,
+        product_ids: list[str],
+        *,
+        current_user: AuthenticatedUser | None = None,
+    ) -> list[CatalogConflictProductResponse]:
+        matches: list[CatalogConflictProductResponse] = []
+        for product_id in product_ids:
+            try:
+                record = self.product_service.get_product(product_id, current_user=current_user)
+            except HTTPException:
+                continue
+            matches.append(
+                CatalogConflictProductResponse(
+                    id=record.id,
+                    status=record.status,
+                    normalized_title=record.product.core.normalized_title,
+                    category=record.product.core.category,
+                    product_type=record.product.core.product_type,
+                    preview_image_path=record.product.images.source.absolute_path or record.product.images.shopify.absolute_path,
+                )
+            )
+        return matches
+
+    def _resolve_catalog_conflict_ids(
+        self,
+        record: ImportRecordResponse,
+        *,
+        current_user: AuthenticatedUser | None = None,
+        catalog_product_ids_by_title: dict[str, list[str]] | None = None,
+        use_fallback_lookup: bool = True,
+    ) -> list[str]:
+        if record.catalog_conflict_product_ids:
+            return record.catalog_conflict_product_ids
+
+        if not use_fallback_lookup:
+            return []
+
+        normalized_title = record.product.core.normalized_title.strip().lower()
+        if not normalized_title:
+            return []
+
+        if catalog_product_ids_by_title is None:
+            catalog_product_ids_by_title = self._catalog_product_ids_by_title(current_user=current_user)
+
+        return catalog_product_ids_by_title.get(normalized_title, [])
+
+    def _catalog_product_ids_by_title(
+        self,
+        *,
+        current_user: AuthenticatedUser | None = None,
+    ) -> dict[str, list[str]]:
+        catalog: dict[str, list[str]] = {}
+        for product in self.product_service.list_products(current_user=current_user):
+            key = product.normalized_title.strip().lower()
+            if not key:
+                continue
+            catalog.setdefault(key, []).append(product.id)
+        return catalog
 
     @staticmethod
     def _fingerprint_for_row(row: ImportedProductRow) -> str | None:

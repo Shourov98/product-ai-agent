@@ -11,6 +11,8 @@ from app.schemas.response import PaginatedProductListResponse, PaginationMetaRes
 
 
 class MongoProductStore:
+    _initialized_keys: set[tuple[str, str, str, str | None]] = set()
+
     def __init__(
         self,
         *,
@@ -23,8 +25,11 @@ class MongoProductStore:
         self.database = self.client[db_name]
         self.collection = self.database[products_collection]
         self.imports_collection = self.database[imports_collection] if imports_collection else None
-        self.collection.create_index([("id", 1)], unique=True)
-        self.collection.create_index([("user_id", 1), ("updated_at", -1)])
+        init_key = (mongodb_uri, db_name, products_collection, imports_collection)
+        if init_key not in self._initialized_keys:
+            self.collection.create_index([("id", 1)], unique=True)
+            self.collection.create_index([("user_id", 1), ("updated_at", -1)])
+            self._initialized_keys.add(init_key)
 
     def save(self, record: ProductRecordResponse, *, user_id: str | None = None) -> None:
         payload = record.model_dump(mode="json")
@@ -133,3 +138,6 @@ class MongoProductStore:
         payload = self.collection.find_one({"id": product_id}, {"run_id": 1})
         run_id = str(payload.get("run_id", product_id)) if payload else product_id
         return Path("/tmp") / run_id
+
+    def close(self) -> None:
+        self.client.close()

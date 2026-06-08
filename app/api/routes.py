@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from app.auth import AuthenticatedUser, get_optional_current_user
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
-from app.schemas.imports import DuplicateGroupResponse, ImportRecordResponse, ImportUploadResponse, PaginatedImportListResponse, UploadImportAsProductResponse
+from app.schemas.imports import DuplicateResolutionResponse, ImportRecordResponse, ImportUploadResponse, PaginatedImportListResponse, UploadImportAsProductResponse
 from app.schemas.repricing import ProductRepricingRequest, ProductRepricingResponse
 from app.schemas.request import MarketplaceRequestLiteral, ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
 from app.schemas.response import PaginatedProductListResponse, ProductPipelineResponse, ProductRecordResponse
@@ -247,26 +247,26 @@ async def upload_product_import_as_product(
 
 @router.get(
     "/imports/products/{record_id}/duplicates",
-    response_model=DuplicateGroupResponse,
+    response_model=DuplicateResolutionResponse,
     status_code=status.HTTP_200_OK,
 )
 async def get_product_import_duplicates(
     record_id: str,
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
-) -> DuplicateGroupResponse:
+) -> DuplicateResolutionResponse:
     service = ImportService()
     return service.get_duplicate_group(record_id, current_user=current_user)
 
 
 @router.post(
     "/imports/products/{record_id}/duplicates/promote",
-    response_model=DuplicateGroupResponse,
+    response_model=DuplicateResolutionResponse,
     status_code=status.HTTP_200_OK,
 )
 async def promote_product_import_duplicate(
     record_id: str,
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
-) -> DuplicateGroupResponse:
+) -> DuplicateResolutionResponse:
     service = ImportService()
     return service.promote_duplicate_to_primary(record_id, current_user=current_user)
 

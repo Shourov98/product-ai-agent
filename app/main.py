@@ -6,6 +6,8 @@ from app.api.forecasting import router as forecasting_router
 from app.api.repricing import router as repricing_router
 from app.api.routes import router as api_router
 from app.config import get_settings
+from app.services.import_service import ImportService
+from app.services.product_service import ProductService
 
 
 def create_app() -> FastAPI:
@@ -14,6 +16,17 @@ def create_app() -> FastAPI:
     app.include_router(api_router, prefix="/api")
     app.include_router(forecasting_router)
     app.include_router(repricing_router)
+
+    @app.on_event("startup")
+    async def warm_service_caches() -> None:
+        ProductService()
+        ImportService()
+
+    @app.on_event("shutdown")
+    async def close_service_caches() -> None:
+        ImportService.reset_shared_state()
+        ProductService.reset_shared_state()
+
     return app
 
 

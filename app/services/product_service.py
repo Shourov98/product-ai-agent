@@ -59,11 +59,25 @@ from app.utils.product_text import title_keywords, unique_strings
 
 
 class ProductService:
+    _shared_settings = None
+    _shared_pipeline = None
+    _shared_store = None
+    _shared_output_service = None
+    _shared_image_agent = None
+    _shared_amazon_agent = None
+    _shared_ebay_agent = None
+    _shared_etsy_agent = None
+    _shared_tiktok_agent = None
+    _shared_shopify_agent = None
+    _shared_optimization_agent = None
+
     def __init__(self) -> None:
-        settings = get_settings()
+        settings = self._shared_settings or get_settings()
+        self.__class__._shared_settings = settings
         self.settings = settings
-        self.pipeline = ProductPipeline()
-        self.store = (
+        self.pipeline = self._shared_pipeline or ProductPipeline()
+        self.__class__._shared_pipeline = self.pipeline
+        self.store = self._shared_store or (
             MongoProductStore(
                 mongodb_uri=settings.mongodb_uri,
                 db_name=settings.mongodb_db_name,
@@ -73,7 +87,8 @@ class ProductService:
             if settings.mongodb_uri and settings.mongodb_enabled
             else ProductStore(settings.output_dir)
         )
-        self.output_service = OutputService(
+        self.__class__._shared_store = self.store
+        self.output_service = self._shared_output_service or OutputService(
             settings.output_dir,
             cloudinary_service=CloudinaryService(
                 cloud_name=settings.cloudinary_cloud_name,
@@ -84,13 +99,40 @@ class ProductService:
             ),
             local_output_enabled=settings.local_output_enabled,
         )
-        self.image_agent = ImageAgent(self.pipeline.openai_service)
-        self.amazon_agent = AmazonAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
-        self.ebay_agent = EbayAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
-        self.etsy_agent = EtsyAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
-        self.tiktok_agent = TikTokAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
-        self.shopify_agent = ShopifyAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
-        self.optimization_agent = ProductOptimizationAgent(self.pipeline.openai_service)
+        self.__class__._shared_output_service = self.output_service
+        self.image_agent = self._shared_image_agent or ImageAgent(self.pipeline.openai_service)
+        self.__class__._shared_image_agent = self.image_agent
+        self.amazon_agent = self._shared_amazon_agent or AmazonAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
+        self.__class__._shared_amazon_agent = self.amazon_agent
+        self.ebay_agent = self._shared_ebay_agent or EbayAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
+        self.__class__._shared_ebay_agent = self.ebay_agent
+        self.etsy_agent = self._shared_etsy_agent or EtsyAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
+        self.__class__._shared_etsy_agent = self.etsy_agent
+        self.tiktok_agent = self._shared_tiktok_agent or TikTokAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
+        self.__class__._shared_tiktok_agent = self.tiktok_agent
+        self.shopify_agent = self._shared_shopify_agent or ShopifyAgent(self.pipeline.ollama_service, self.pipeline.openai_service)
+        self.__class__._shared_shopify_agent = self.shopify_agent
+        self.optimization_agent = self._shared_optimization_agent or ProductOptimizationAgent(self.pipeline.openai_service)
+        self.__class__._shared_optimization_agent = self.optimization_agent
+
+    @classmethod
+    def reset_shared_state(cls) -> None:
+        store = cls._shared_store
+        close = getattr(store, "close", None)
+        if callable(close):
+            close()
+
+        cls._shared_settings = None
+        cls._shared_pipeline = None
+        cls._shared_store = None
+        cls._shared_output_service = None
+        cls._shared_image_agent = None
+        cls._shared_amazon_agent = None
+        cls._shared_ebay_agent = None
+        cls._shared_etsy_agent = None
+        cls._shared_tiktok_agent = None
+        cls._shared_shopify_agent = None
+        cls._shared_optimization_agent = None
 
     async def generate_and_store(
         self,

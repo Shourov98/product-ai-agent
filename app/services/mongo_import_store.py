@@ -11,12 +11,17 @@ from app.schemas.response import PaginationMetaResponse
 
 
 class MongoImportStore:
+    _initialized_keys: set[tuple[str, str, str]] = set()
+
     def __init__(self, *, mongodb_uri: str, db_name: str, imports_collection: str) -> None:
         self.client = MongoClient(mongodb_uri)
         self.database = self.client[db_name]
         self.collection = self.database[imports_collection]
-        self.collection.create_index([("id", 1)], unique=True)
-        self.collection.create_index([("user_id", 1), ("updated_at", -1)])
+        init_key = (mongodb_uri, db_name, imports_collection)
+        if init_key not in self._initialized_keys:
+            self.collection.create_index([("id", 1)], unique=True)
+            self.collection.create_index([("user_id", 1), ("updated_at", -1)])
+            self._initialized_keys.add(init_key)
 
     def save(self, record: ImportRecordResponse, *, user_id: str | None = None) -> None:
         payload = record.model_dump(mode="json")
@@ -90,3 +95,6 @@ class MongoImportStore:
         if user_id is not None:
             query["user_id"] = user_id
         self.collection.delete_one(query)
+
+    def close(self) -> None:
+        self.client.close()

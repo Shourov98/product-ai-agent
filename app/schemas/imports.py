@@ -72,6 +72,7 @@ class ImportRecordResponse(BaseModel):
     primary_record_id: str | None = None
     duplicate_count: int = Field(default=0, ge=0)
     can_upload_as_product: bool = True
+    catalog_conflict_product_ids: list[str] = Field(default_factory=list)
     linked_product_id: str | None = None
     product: ProductPipelineResponse
     variants: MarketplaceVariantsResponse = Field(default_factory=MarketplaceVariantsResponse)
@@ -92,6 +93,7 @@ class ImportListItemResponse(BaseModel):
     primary_record_id: str | None = None
     duplicate_count: int = Field(default=0, ge=0)
     can_upload_as_product: bool = True
+    catalog_conflict_product_ids: list[str] = Field(default_factory=list)
 
 
 class UploadImportAsProductResponse(BaseModel):
@@ -99,9 +101,20 @@ class UploadImportAsProductResponse(BaseModel):
     product_record: ProductRecordResponse
 
 
-class DuplicateGroupResponse(BaseModel):
+class CatalogConflictProductResponse(BaseModel):
+    id: str
+    status: str
+    normalized_title: str
+    category: str
+    product_type: str
+    preview_image_path: str
+
+
+class DuplicateResolutionResponse(BaseModel):
+    kind: Literal["import_group", "catalog_conflict"]
     primary: ImportRecordResponse
     duplicates: list[ImportRecordResponse] = Field(default_factory=list)
+    catalog_matches: list[CatalogConflictProductResponse] = Field(default_factory=list)
 
 
 class PaginatedImportListResponse(BaseModel):
