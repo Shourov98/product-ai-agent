@@ -85,3 +85,22 @@ class BulkRepricingResponse(BaseModel):
 
 class DemoResponse(BulkRepricingResponse):
     demo_scenarios: list[str]
+
+
+class ProductRepricingRequest(BaseModel):
+    strategy: StrategyLiteral = "auto"
+    dry_run: bool = True
+
+
+class ProductMatchResponse(BaseModel):
+    asin: str
+    title: str
+    category: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    source: str
+
+
+class ProductRepricingResponse(BaseModel):
+    product_id: str
+    matched_product: ProductMatchResponse
+    repricing: RepricingResult

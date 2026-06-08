@@ -3,6 +3,7 @@ from __future__ import annotations
 from statistics import mean
 
 from app.config import Settings
+from app.services.amazon_dataset_research_service import AmazonDatasetResearchService
 from app.schemas.response import (
     CoreProductResponse,
     MarketResearchBundleResponse,
@@ -32,6 +33,7 @@ class MarketResearchService:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.amazon_dataset = AmazonDatasetResearchService(enabled=True)
         self.ebay_live = EbayMarketResearchService(
             enabled=settings.market_research_realtime_enabled and settings.ebay_research_enabled,
             client_id=settings.ebay_client_id,
@@ -43,7 +45,7 @@ class MarketResearchService:
         )
 
     async def build_research_bundle(self, core_data: CoreProductResponse) -> MarketResearchBundleResponse:
-        amazon = self._build_marketplace_research("amazon", core_data)
+        amazon = self._build_amazon_marketplace_research(core_data)
         ebay = await self._build_ebay_marketplace_research(core_data)
         etsy = self._build_marketplace_research("etsy", core_data)
         tiktok = self._build_marketplace_research("tiktok", core_data)
@@ -55,6 +57,17 @@ class MarketResearchService:
             tiktok=tiktok,
             shopify=shopify,
         )
+
+    def _build_amazon_marketplace_research(self, core_data: CoreProductResponse) -> MarketplaceResearchResponse:
+        dataset_result = self.amazon_dataset.search(
+            title=core_data.normalized_title,
+            product_type=core_data.product_type,
+            category=core_data.category,
+            attributes=core_data.attributes,
+        )
+        if dataset_result is not None:
+            return dataset_result
+        return self._build_marketplace_research("amazon", core_data)
 
     async def _build_ebay_marketplace_research(self, core_data: CoreProductResponse) -> MarketplaceResearchResponse:
         fallback = self._build_marketplace_research("ebay", core_data)

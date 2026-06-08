@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from app.auth import AuthenticatedUser, get_optional_current_user
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
+from app.schemas.repricing import ProductRepricingRequest, ProductRepricingResponse
 from app.schemas.request import MarketplaceRequestLiteral, ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
 from app.schemas.response import ProductListItemResponse, ProductPipelineResponse, ProductRecordResponse
 from app.services.image_service import ImagePayload
@@ -137,6 +138,34 @@ async def optimize_product(
 ) -> ProductRecordResponse:
     service = ProductService()
     return await service.optimize_product(product_id, payload, current_user=current_user)
+
+
+@router.post(
+    "/products/{product_id}/marketplaces/{marketplace}/optimize",
+    response_model=ProductRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def optimize_marketplace(
+    product_id: str,
+    marketplace: MarketplaceRequestLiteral,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ProductRecordResponse:
+    service = ProductService()
+    return await service.optimize_marketplace(product_id, marketplace, current_user=current_user)
+
+
+@router.post(
+    "/products/{product_id}/repricing",
+    response_model=ProductRepricingResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def analyze_product_repricing(
+    product_id: str,
+    payload: ProductRepricingRequest,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ProductRepricingResponse:
+    service = ProductService()
+    return await service.analyze_product_repricing(product_id, payload, current_user=current_user)
 
 
 @router.post(

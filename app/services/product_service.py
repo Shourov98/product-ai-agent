@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from urllib.request import urlopen
 from uuid import uuid4
 
@@ -17,7 +19,10 @@ from app.agents.shopify_agent import ShopifyAgent
 from app.agents.tiktok_agent import TikTokAgent
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
+from app.providers.factory import get_provider
+from app.providers.kaggle_provider import KaggleProvider
 from app.schemas.request import ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
+from app.schemas.repricing import ProductMatchResponse, ProductRepricingRequest, ProductRepricingResponse
 from app.schemas.response import (
     AmazonResponse,
     CoreProductResponse,
@@ -37,6 +42,8 @@ from app.services.image_service import ImagePayload
 from app.services.mongo_product_store import MongoProductStore
 from app.services.output_service import OutputService
 from app.services.product_store import ProductStore
+from app.services.repricing_engine import RepricingEngine
+from app.utils.product_text import title_keywords, unique_strings
 
 
 class ProductService:
@@ -215,6 +222,15 @@ class ProductService:
         self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
+    async def optimize_marketplace(
+        self,
+        product_id: str,
+        marketplace: MarketplaceLiteral,
+        current_user: AuthenticatedUser | None = None,
+    ) -> ProductRecordResponse:
+        payload = ProductOptimizationRequest(marketplaces=[marketplace], optimize_core=False)
+        return await self.optimize_product(product_id, payload, current_user=current_user)
+
     async def regenerate_marketplace(
         self,
         product_id: str,
@@ -289,6 +305,23 @@ class ProductService:
         self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
+    async def analyze_product_repricing(
+        self,
+        product_id: str,
+        payload: ProductRepricingRequest,
+        current_user: AuthenticatedUser | None = None,
+    ) -> ProductRepricingResponse:
+        record = self.get_product(product_id, current_user=current_user)
+        provider = get_provider()
+        matched_product = self._match_repricing_product(record, provider)
+        engine = RepricingEngine(provider, self.pipeline.openai_service.client if self.pipeline.openai_service else None)
+        repricing = await engine.run(matched_product.asin, payload.strategy, payload.dry_run)
+        return ProductRepricingResponse(
+            product_id=record.id,
+            matched_product=matched_product,
+            repricing=repricing,
+        )
+
     def add_size_variant(
         self,
         product_id: str,
@@ -361,6 +394,128 @@ class ProductService:
                 "variants": MarketplaceVariantsResponse(**variant_map),
                 "updated_at": self._timestamp(),
             }
+        )
+
+    def _match_repricing_product(
+        self,
+        record: ProductRecordResponse,
+        provider: Any,
+    ) -> ProductMatchResponse:
+        if not isinstance(provider, KaggleProvider):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Product-level repricing currently supports the Kaggle-backed Amazon provider only.",
+            )
+
+        frame = provider.products
+        if frame.empty:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Repricing dataset is unavailable.",
+            )
+
+        core = record.product.core
+        title = core.normalized_title or core.source_title
+        category = core.category.lower()
+        product_type = core.product_type.lower()
+        attribute_terms = [value.lower() for value in core.attributes.values() if value.strip()]
+        query_terms = unique_strings(
+            [product_type, category, *title_keywords(title), *attribute_terms],
+            limit=8,
+        )
+        safe_terms = [re.escape(term) for term in query_terms[:5] if term]
+        if not safe_terms:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Product data is not descriptive enough for repricing analysis.",
+            )
+
+        if "title_lower" not in frame.columns:
+            frame["title_lower"] = frame["title"].astype(str).str.lower()
+        if "category_lower" not in frame.columns:
+            frame["category_lower"] = frame["category_name"].astype(str).str.lower()
+
+        pattern = "|".join(safe_terms)
+        candidates = frame[frame["title_lower"].str.contains(pattern, regex=True, na=False)].copy()
+        if category:
+            category_matches = candidates[candidates["category_lower"] == category]
+            if not category_matches.empty:
+                candidates = category_matches
+        if candidates.empty and title_keywords(title):
+            fallback_terms = [re.escape(term) for term in title_keywords(title)[:3]]
+            fallback_pattern = "|".join(fallback_terms)
+            candidates = frame[frame["title_lower"].str.contains(fallback_pattern, regex=True, na=False)].copy()
+        if candidates.empty:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No comparable marketplace product was found for repricing.",
+            )
+
+        candidates["match_score"] = candidates.apply(
+            lambda row: self._score_repricing_candidate(
+                title_lower=str(row["title_lower"]),
+                category_lower=str(row["category_lower"]),
+                query_terms=query_terms,
+                product_type=product_type,
+                category=category,
+                attribute_terms=attribute_terms,
+                is_best_seller=bool(row.get("isBestSeller", False)),
+                stars=float(row.get("stars", 0.0) or 0.0),
+                reviews=int(row.get("reviews", 0) or 0),
+                bought_in_last_month=int(row.get("boughtInLastMonth", 0) or 0),
+            ),
+            axis=1,
+        )
+        top = candidates.sort_values(
+            by=["match_score", "boughtInLastMonth", "reviews", "stars"],
+            ascending=[False, False, False, False],
+        ).iloc[0]
+        score = float(top["match_score"])
+        if score < 2.0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No confident marketplace match was found for repricing.",
+            )
+
+        return ProductMatchResponse(
+            asin=str(top["asin"]),
+            title=str(top["title"]),
+            category=str(top.get("category_name", "Uncategorized")),
+            confidence=max(0.55, min(0.99, round(score / 10.0, 2))),
+            source="kaggle_dataset",
+        )
+
+    @staticmethod
+    def _score_repricing_candidate(
+        *,
+        title_lower: str,
+        category_lower: str,
+        query_terms: list[str],
+        product_type: str,
+        category: str,
+        attribute_terms: list[str],
+        is_best_seller: bool,
+        stars: float,
+        reviews: int,
+        bought_in_last_month: int,
+    ) -> float:
+        keyword_matches = sum(1.5 for term in query_terms if term and term in title_lower)
+        product_type_bonus = 2.0 if product_type and product_type in title_lower else 0.0
+        category_bonus = 2.0 if category and category == category_lower else 0.0
+        attribute_bonus = sum(0.75 for term in attribute_terms[:4] if term and term in title_lower)
+        bestseller_bonus = 1.0 if is_best_seller else 0.0
+        rating_bonus = min(1.0, stars / 5.0)
+        review_bonus = min(1.5, reviews / 4000)
+        velocity_bonus = min(1.5, bought_in_last_month / 1500)
+        return (
+            keyword_matches
+            + product_type_bonus
+            + category_bonus
+            + attribute_bonus
+            + bestseller_bonus
+            + rating_bonus
+            + review_bonus
+            + velocity_bonus
         )
 
     @staticmethod

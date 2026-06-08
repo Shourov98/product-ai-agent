@@ -298,6 +298,7 @@ class ImageAgent:
                 expected_width=expected_width,
                 expected_height=expected_height,
                 background=profile["background"],
+                marketplace=marketplace,
             )
             return ImageVariantResponse(
                 marketplace=marketplace,
@@ -316,6 +317,7 @@ class ImageAgent:
                 expected_width=expected_width,
                 expected_height=expected_height,
                 background=profile["background"],
+                marketplace=marketplace,
                 errors=[f"Color variant composition failed: {exc}"],
             )
             return ImageVariantResponse(
@@ -337,6 +339,7 @@ class ImageAgent:
             expected_width=None,
             expected_height=None,
             background="source",
+            marketplace="source",
         )
         return ImageVariantResponse(
             marketplace="source",
@@ -359,6 +362,8 @@ class ImageAgent:
         prompt = (
             f"Remove the background and isolate the product for ecommerce use. "
             f"Preserve the exact product shape, color, and material. "
+            "Do not add any text, captions, labels, banners, watermark shapes, underline bars, or decorative graphic elements. "
+            "Return only the isolated product on a transparent background. "
             f"Product title: {core_data.normalized_title}. "
             f"Product type: {core_data.product_type}. "
             f"Attributes: {core_data.attributes}."
@@ -377,6 +382,7 @@ class ImageAgent:
                 size="1024x1024",
                 background="transparent",
             )
+            image_bytes = self._cleanup_cutout_artifacts(image_bytes)
             absolute_path = output_service.save_binary(run_dir, relative_path, image_bytes, mime_type="image/png")
             validation = self._validate_bytes(
                 image_bytes,
@@ -384,6 +390,7 @@ class ImageAgent:
                 expected_width=1024,
                 expected_height=1024,
                 background="transparent",
+                marketplace="transparent_cutout",
             )
             return ImageVariantResponse(
                 marketplace="transparent_cutout",
@@ -429,6 +436,7 @@ class ImageAgent:
                 expected_width=expected_width,
                 expected_height=expected_height,
                 background=profile["background"],
+                marketplace=marketplace,
                 errors=["Transparent cutout was unavailable; white-background composition could not be performed."],
             )
             return ImageVariantResponse(
@@ -455,6 +463,7 @@ class ImageAgent:
                 expected_width=expected_width,
                 expected_height=expected_height,
                 background=profile["background"],
+                marketplace=marketplace,
             )
             return ImageVariantResponse(
                 marketplace=marketplace,
@@ -473,6 +482,7 @@ class ImageAgent:
                 expected_width=expected_width,
                 expected_height=expected_height,
                 background=profile["background"],
+                marketplace=marketplace,
                 errors=[f"White-background composition failed: {exc}"],
             )
             return ImageVariantResponse(
@@ -524,6 +534,7 @@ class ImageAgent:
                 expected_width=expected_width,
                 expected_height=expected_height,
                 background=profile["background"],
+                marketplace=marketplace,
             )
             return ImageVariantResponse(
                 marketplace=marketplace,
@@ -542,6 +553,7 @@ class ImageAgent:
                 expected_width=expected_width,
                 expected_height=expected_height,
                 background=profile["background"],
+                marketplace=marketplace,
                 errors=[f"Marketplace composite failed: {exc}"],
             )
             return ImageVariantResponse(
@@ -646,17 +658,19 @@ class ImageAgent:
             )
             canvas = self._build_canvas(width, height, background)
             self._draw_spotlight(canvas, marketplace)
+            offset_x = (width - resized.width) // 2
+            headroom_ratio = 0.15 if marketplace == "tiktok" else 0.14
+            offset_y = max(int(height * headroom_ratio), (height - resized.height) // 2 - int(height * 0.03))
             self._draw_ground_shadow(
                 canvas,
-                resized,
+                product_x=offset_x,
+                product_y=offset_y,
+                product_width=resized.width,
+                product_height=resized.height,
                 shadow_opacity=profile["shadow_opacity"],
                 shadow_blur=profile["shadow_blur"],
                 shadow_offset_y=profile["shadow_offset_y"],
             )
-
-            offset_x = (width - resized.width) // 2
-            headroom_ratio = 0.15 if marketplace == "tiktok" else 0.14
-            offset_y = max(int(height * headroom_ratio), (height - resized.height) // 2 - int(height * 0.03))
             canvas.alpha_composite(resized, (offset_x, offset_y))
 
             buffer = BytesIO()
@@ -711,23 +725,41 @@ class ImageAgent:
 
         canvas.alpha_composite(overlay)
 
-    def _draw_ground_shadow(self, canvas, product, *, shadow_opacity: int, shadow_blur: int, shadow_offset_y: int) -> None:
+    def _draw_ground_shadow(
+        self,
+        canvas,
+        *,
+        product_x: int,
+        product_y: int,
+        product_width: int,
+        product_height: int,
+        shadow_opacity: int,
+        shadow_blur: int,
+        shadow_offset_y: int,
+    ) -> None:
         if Image is None:
             raise RuntimeError("Pillow is not installed.")
 
         try:
-            from PIL import ImageFilter
+            from PIL import ImageDraw, ImageFilter
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("Pillow ImageFilter is not installed.") from exc
+            raise RuntimeError("Pillow drawing dependencies are not installed.") from exc
 
         overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
         width, height = canvas.size
-        shadow_width = int(product.width * 0.74)
-        shadow_height = max(18, int(product.height * 0.08))
-        shadow = Image.new("RGBA", (shadow_width, shadow_height), (0, 0, 0, shadow_opacity))
-        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=shadow_blur))
-        shadow_x = (width - shadow.width) // 2
-        shadow_y = min(height - shadow.height - 12, (height + product.height) // 2 + shadow_offset_y)
+        shadow_width = max(36, int(product_width * 0.54))
+        shadow_height = max(14, int(product_height * 0.06))
+        shadow = Image.new("RGBA", (shadow_width, shadow_height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(shadow)
+        draw.ellipse(
+            (0, 0, shadow_width - 1, shadow_height - 1),
+            fill=(0, 0, 0, max(18, int(shadow_opacity * 0.72))),
+        )
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=max(10, int(shadow_blur * 0.45))))
+        shadow_x = product_x + (product_width - shadow.width) // 2
+        shadow_y = min(height - shadow.height - 10, product_y + product_height - max(2, int(product_height * 0.03)) + shadow_offset_y)
+        shadow_x = max(0, min(width - shadow.width, shadow_x))
+        shadow_y = max(0, min(height - shadow.height, shadow_y))
         overlay.alpha_composite(shadow, (shadow_x, shadow_y))
         canvas.alpha_composite(overlay)
 
@@ -841,6 +873,7 @@ class ImageAgent:
         expected_width: int | None,
         expected_height: int | None,
         background: str,
+        marketplace: MarketplaceName,
         errors: list[str] | None = None,
     ) -> ImageValidationResponse:
         collected_errors = list(errors or [])
@@ -883,6 +916,28 @@ class ImageAgent:
             except Exception as exc:
                 collected_errors.append(f"Could not verify white background: {exc}")
 
+        if marketplace in {"etsy", "tiktok", "shopify"} and Image is not None:
+            try:
+                with Image.open(BytesIO(payload)) as image:
+                    rgb_image = image.convert("RGB")
+                    banner_issue = self._detect_bottom_text_banner(rgb_image)
+                    if banner_issue is not None:
+                        collected_errors.append(banner_issue)
+                    shadow_bar_issue = self._detect_flat_shadow_bar(rgb_image)
+                    if shadow_bar_issue is not None:
+                        collected_errors.append(shadow_bar_issue)
+            except Exception as exc:
+                collected_errors.append(f"Could not inspect styled image artifacts: {exc}")
+
+        if marketplace == "transparent_cutout" and Image is not None:
+            try:
+                with Image.open(BytesIO(payload)) as image:
+                    cutout_issue = self._detect_cutout_text_artifacts(image.convert("RGBA"))
+                    if cutout_issue is not None:
+                        collected_errors.append(cutout_issue)
+            except Exception as exc:
+                collected_errors.append(f"Could not inspect transparent cutout artifacts: {exc}")
+
         return ImageValidationResponse(
             passed=len(collected_errors) == 0,
             width=width,
@@ -896,3 +951,195 @@ class ImageAgent:
             errors=collected_errors,
             mime_type=mime_type,
         )
+
+    def _detect_bottom_text_banner(self, image) -> str | None:
+        if Image is None:
+            return None
+
+        width, height = image.size
+        if width < 160 or height < 160:
+            return None
+
+        start_y = int(height * 0.72)
+        end_y = height
+        row_dark_ratios: list[float] = []
+
+        for y in range(start_y, end_y):
+            dark_pixels = 0
+            for x in range(width):
+                red, green, blue = image.getpixel((x, y))
+                if max(red, green, blue) < 170:
+                    dark_pixels += 1
+            row_dark_ratios.append(dark_pixels / max(width, 1))
+
+        strong_rows = [ratio for ratio in row_dark_ratios if ratio >= 0.22]
+        medium_rows = [ratio for ratio in row_dark_ratios if ratio >= 0.08]
+        has_sustained_band = len(strong_rows) >= 6 or len(medium_rows) >= 10
+        if not has_sustained_band:
+            return None
+
+        bottom_crop = image.crop((0, start_y, width, end_y))
+        grayscale = bottom_crop.convert("L")
+        horizontal_edges = 0
+        for y in range(1, grayscale.height):
+            transitions = 0
+            prev_value = grayscale.getpixel((0, y))
+            for x in range(1, grayscale.width):
+                current_value = grayscale.getpixel((x, y))
+                if abs(current_value - prev_value) > 35:
+                    transitions += 1
+                prev_value = current_value
+            if transitions > max(18, grayscale.width // 18):
+                horizontal_edges += 1
+
+        if horizontal_edges >= 4:
+            return (
+                "Styled marketplace image appears to contain bottom text/banner artifacts. "
+                "Reject captions, labels, underline bars, and title strips; keep background swap only."
+            )
+        return None
+
+    def _detect_flat_shadow_bar(self, image) -> str | None:
+        if Image is None:
+            return None
+
+        width, height = image.size
+        if width < 160 or height < 160:
+            return None
+
+        start_y = int(height * 0.52)
+        end_y = int(height * 0.88)
+        grayscale = image.convert("L")
+
+        for y in range(start_y, end_y):
+            run_start = None
+            run_length = 0
+            for x in range(width):
+                value = grayscale.getpixel((x, y))
+                if value < 175:
+                    if run_start is None:
+                        run_start = x
+                    run_length += 1
+                else:
+                    if run_start is not None:
+                        break
+            if run_start is None:
+                continue
+
+            centered = abs((run_start + (run_length / 2)) - (width / 2)) < width * 0.18
+            wide_enough = run_length > width * 0.28
+            row_group = 0
+            for scan_y in range(y, min(end_y, y + 10)):
+                dark_pixels = 0
+                for scan_x in range(run_start, min(width, run_start + run_length)):
+                    if grayscale.getpixel((scan_x, scan_y)) < 185:
+                        dark_pixels += 1
+                if dark_pixels / max(run_length, 1) > 0.65:
+                    row_group += 1
+            thin_group = row_group >= 4 and row_group <= 10
+            if centered and wide_enough and thin_group:
+                return (
+                    "Styled marketplace image appears to contain a flat underline-like shadow bar. "
+                    "Use only a soft natural grounding shadow; reject thick horizontal bars beneath the product."
+                )
+
+        return None
+
+    def _cleanup_cutout_artifacts(self, payload: bytes) -> bytes:
+        if Image is None:
+            return payload
+
+        with Image.open(BytesIO(payload)) as image:
+            rgba = image.convert("RGBA")
+            alpha = rgba.getchannel("A")
+            width, height = rgba.size
+            visited: set[tuple[int, int]] = set()
+            components: list[dict[str, object]] = []
+            pixels = alpha.load()
+
+            for y in range(height):
+                for x in range(width):
+                    if pixels[x, y] == 0 or (x, y) in visited:
+                        continue
+                    stack = [(x, y)]
+                    visited.add((x, y))
+                    coords: list[tuple[int, int]] = []
+                    min_x = max_x = x
+                    min_y = max_y = y
+                    while stack:
+                        cx, cy = stack.pop()
+                        coords.append((cx, cy))
+                        min_x = min(min_x, cx)
+                        max_x = max(max_x, cx)
+                        min_y = min(min_y, cy)
+                        max_y = max(max_y, cy)
+                        for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                            if nx < 0 or ny < 0 or nx >= width or ny >= height:
+                                continue
+                            if pixels[nx, ny] == 0 or (nx, ny) in visited:
+                                continue
+                            visited.add((nx, ny))
+                            stack.append((nx, ny))
+                    components.append(
+                        {
+                            "coords": coords,
+                            "area": len(coords),
+                            "min_x": min_x,
+                            "max_x": max_x,
+                            "min_y": min_y,
+                            "max_y": max_y,
+                        }
+                    )
+
+            if not components:
+                return payload
+
+            components.sort(key=lambda item: int(item["area"]), reverse=True)
+            primary = components[0]
+            cleaned = rgba.copy()
+            cleaned_pixels = cleaned.load()
+
+            for component in components[1:]:
+                area = int(component["area"])
+                min_y = int(component["min_y"])
+                max_y = int(component["max_y"])
+                max_x = int(component["max_x"])
+                min_x = int(component["min_x"])
+                component_height = max_y - min_y + 1
+                component_width = max_x - min_x + 1
+                is_low = min_y > int(height * 0.58)
+                is_small = area < max(5000, int(primary["area"]) * 0.12)
+                is_short_banner = component_height < int(height * 0.12) and component_width < int(width * 0.65)
+                if is_low and is_small and is_short_banner:
+                    for cx, cy in component["coords"]:
+                        cleaned_pixels[cx, cy] = (0, 0, 0, 0)
+
+            buffer = BytesIO()
+            cleaned.save(buffer, format="PNG")
+            return buffer.getvalue()
+
+    def _detect_cutout_text_artifacts(self, image) -> str | None:
+        if Image is None:
+            return None
+
+        alpha = image.getchannel("A")
+        width, height = alpha.size
+        if width < 160 or height < 160:
+            return None
+
+        dark_alpha_rows = 0
+        start_y = int(height * 0.68)
+        for y in range(start_y, height):
+            opaque_pixels = 0
+            for x in range(width):
+                if alpha.getpixel((x, y)) > 0:
+                    opaque_pixels += 1
+            if opaque_pixels / max(width, 1) > 0.1:
+                dark_alpha_rows += 1
+
+        if dark_alpha_rows >= 8:
+            return (
+                "Transparent cutout appears to contain bottom text/banner artifacts. "
+                "Only the product should remain in the transparent asset."
+            )
+        return None
