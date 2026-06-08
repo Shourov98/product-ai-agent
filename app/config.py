@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -25,10 +26,10 @@ class Settings(BaseModel):
     mongodb_enabled: bool = False
     mongodb_uri: str | None = None
     mongodb_db_name: str = "product_ai_agent"
-    mongodb_products_collection: str = "products"
-    mongodb_imports_collection: str = "product_imports"
-    mongodb_runs_collection: str = "product_runs"
-    mongodb_users_collection: str = "users"
+    mongodb_products_collection: str = "product_ai_products"
+    mongodb_imports_collection: str = "product_ai_imports"
+    mongodb_runs_collection: str = "product_ai_runs"
+    mongodb_users_collection: str = "product_ai_users"
     ollama_enabled: bool = True
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
@@ -54,6 +55,7 @@ class Settings(BaseModel):
 def get_settings() -> Settings:
     mongodb_uri = os.getenv("MONGODB_URI")
     mongodb_enabled_default = "true" if mongodb_uri else "false"
+    mongodb_db_name = os.getenv("MONGODB_DB_NAME") or _db_name_from_mongodb_uri(mongodb_uri) or "product_ai_agent"
     return Settings(
         debug=os.getenv("DEBUG", "false").lower() == "true",
         max_upload_size_bytes=int(
@@ -67,11 +69,11 @@ def get_settings() -> Settings:
         jwt_access_secret=os.getenv("JWT_ACCESS_SECRET"),
         mongodb_enabled=os.getenv("MONGODB_ENABLED", mongodb_enabled_default).lower() == "true",
         mongodb_uri=mongodb_uri,
-        mongodb_db_name=os.getenv("MONGODB_DB_NAME", "product_ai_agent"),
-        mongodb_products_collection=os.getenv("MONGODB_PRODUCTS_COLLECTION", "products"),
-        mongodb_imports_collection=os.getenv("MONGODB_IMPORTS_COLLECTION", "product_imports"),
-        mongodb_runs_collection=os.getenv("MONGODB_RUNS_COLLECTION", "product_runs"),
-        mongodb_users_collection=os.getenv("MONGODB_USERS_COLLECTION", "users"),
+        mongodb_db_name=mongodb_db_name,
+        mongodb_products_collection=os.getenv("MONGODB_PRODUCTS_COLLECTION", "product_ai_products"),
+        mongodb_imports_collection=os.getenv("MONGODB_IMPORTS_COLLECTION", "product_ai_imports"),
+        mongodb_runs_collection=os.getenv("MONGODB_RUNS_COLLECTION", "product_ai_runs"),
+        mongodb_users_collection=os.getenv("MONGODB_USERS_COLLECTION", "product_ai_users"),
         ollama_enabled=os.getenv("OLLAMA_ENABLED", "true").lower() == "true",
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
         ollama_model=os.getenv("OLLAMA_MODEL", "qwen3:8b"),
@@ -93,3 +95,12 @@ def get_settings() -> Settings:
         ebay_identity_base_url=os.getenv("EBAY_IDENTITY_BASE_URL", "https://api.ebay.com"),
         ebay_search_limit=int(os.getenv("EBAY_SEARCH_LIMIT", "5")),
     )
+
+
+def _db_name_from_mongodb_uri(mongodb_uri: str | None) -> str | None:
+    if not mongodb_uri:
+        return None
+    path = urlparse(mongodb_uri).path.strip("/")
+    if not path:
+        return None
+    return path.split("/", 1)[0] or None

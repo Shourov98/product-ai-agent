@@ -130,6 +130,37 @@ async def get_product_import(
     return service.get_import(record_id, current_user=current_user)
 
 
+@router.post(
+    "/imports/products/{record_id}/source-image",
+    response_model=ImportRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def upload_product_import_source_image(
+    record_id: str,
+    image: UploadFile = File(...),
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ImportRecordResponse:
+    settings = get_settings()
+    content = await image.read()
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image upload is empty.")
+    if len(content) > settings.max_upload_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Image exceeds configured upload limit.",
+        )
+    service = ImportService()
+    return await service.upload_source_image(
+        record_id,
+        ImagePayload(
+            filename=image.filename or "upload.bin",
+            content_type=image.content_type or "application/octet-stream",
+            data=content,
+        ),
+        current_user=current_user,
+    )
+
+
 @router.patch(
     "/imports/products/{record_id}",
     response_model=ImportRecordResponse,

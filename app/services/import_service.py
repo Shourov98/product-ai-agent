@@ -64,6 +64,30 @@ class ImportService:
         self.get_import(record_id, current_user=current_user)
         self.store.delete(record_id, user_id=current_user.user_id if current_user is not None else None)
 
+    async def upload_source_image(
+        self,
+        record_id: str,
+        image: ImagePayload,
+        current_user: AuthenticatedUser | None = None,
+    ) -> ImportRecordResponse:
+        record = self.get_import(record_id, current_user=current_user)
+        run_dir = self.product_service.output_service.create_run_dir()
+        generated_images = await self.product_service.image_agent.process(
+            image=image,
+            core_data=record.product.core,
+            amazon_data=record.product.amazon,
+            ebay_data=record.product.ebay,
+            etsy_data=record.product.etsy,
+            tiktok_data=record.product.tiktok,
+            shopify_data=record.product.shopify,
+            run_dir=run_dir,
+            output_service=self.product_service.output_service,
+        )
+        updated_product = record.product.model_copy(update={"images": generated_images})
+        updated = self._refresh_record_state(record, updated_product, current_user=current_user)
+        self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
+        return updated
+
     def update_import(
         self,
         record_id: str,
