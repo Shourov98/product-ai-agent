@@ -5,10 +5,12 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from app.auth import AuthenticatedUser, get_optional_current_user
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
+from app.schemas.imports import ImportListItemResponse, ImportRecordResponse, ImportUploadResponse, UploadImportAsProductResponse
 from app.schemas.repricing import ProductRepricingRequest, ProductRepricingResponse
 from app.schemas.request import MarketplaceRequestLiteral, ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
 from app.schemas.response import ProductListItemResponse, ProductPipelineResponse, ProductRecordResponse
 from app.services.image_service import ImagePayload
+from app.services.import_service import ImportService
 from app.services.product_service import ProductService
 
 router = APIRouter()
@@ -85,6 +87,129 @@ async def generate_and_create_product(
     )
     service = ProductService()
     return await service.generate_and_store(payload, title, current_user=current_user)
+
+
+@router.post(
+    "/imports/products/upload",
+    response_model=ImportUploadResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def upload_product_import(
+    file: UploadFile = File(...),
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ImportUploadResponse:
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded import file is empty.")
+    service = ImportService()
+    return service.upload_file(filename=file.filename or "import.bin", payload=content, current_user=current_user)
+
+
+@router.get(
+    "/imports/products",
+    response_model=list[ImportListItemResponse],
+    status_code=status.HTTP_200_OK,
+)
+async def list_product_imports(
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> list[ImportListItemResponse]:
+    service = ImportService()
+    return service.list_imports(current_user=current_user)
+
+
+@router.get(
+    "/imports/products/{record_id}",
+    response_model=ImportRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_product_import(
+    record_id: str,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ImportRecordResponse:
+    service = ImportService()
+    return service.get_import(record_id, current_user=current_user)
+
+
+@router.patch(
+    "/imports/products/{record_id}",
+    response_model=ImportRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def update_product_import(
+    record_id: str,
+    payload: ProductUpdateRequest,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ImportRecordResponse:
+    service = ImportService()
+    return service.update_import(record_id, payload, current_user=current_user)
+
+
+@router.delete(
+    "/imports/products/{record_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_product_import(
+    record_id: str,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+):
+    service = ImportService()
+    service.delete_import(record_id, current_user=current_user)
+    return None
+
+
+@router.post(
+    "/imports/products/{record_id}/optimize",
+    response_model=ImportRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def optimize_product_import(
+    record_id: str,
+    payload: ProductOptimizationRequest,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ImportRecordResponse:
+    service = ImportService()
+    return await service.optimize_import(record_id, payload, current_user=current_user)
+
+
+@router.post(
+    "/imports/products/{record_id}/marketplaces/{marketplace}/optimize",
+    response_model=ImportRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def optimize_product_import_marketplace(
+    record_id: str,
+    marketplace: MarketplaceRequestLiteral,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ImportRecordResponse:
+    service = ImportService()
+    return await service.optimize_import_marketplace(record_id, marketplace, current_user=current_user)
+
+
+@router.post(
+    "/imports/products/{record_id}/marketplaces/{marketplace}/regenerate",
+    response_model=ImportRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def regenerate_product_import_marketplace(
+    record_id: str,
+    marketplace: MarketplaceRequestLiteral,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ImportRecordResponse:
+    service = ImportService()
+    return await service.regenerate_import_marketplace(record_id, marketplace, current_user=current_user)
+
+
+@router.post(
+    "/imports/products/{record_id}/upload-as-product",
+    response_model=UploadImportAsProductResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def upload_product_import_as_product(
+    record_id: str,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> UploadImportAsProductResponse:
+    service = ImportService()
+    return service.upload_as_product(record_id, current_user=current_user)
 
 
 @router.get(

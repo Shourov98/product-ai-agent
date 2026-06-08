@@ -28,12 +28,23 @@ from app.schemas.response import (
     CoreProductResponse,
     EbayResponse,
     EtsyResponse,
+    GeneratedImagesResponse,
+    ImageValidationResponse,
+    ImageVariantResponse,
+    IntelligenceLayerResponse,
     MarketplaceLiteral,
+    MarketplacePricingResponse,
+    MarketplaceResearchResponse,
+    MarketResearchBundleResponse,
     MarketplaceVariantsResponse,
+    PipelineValidationResponse,
+    PricingInsightsResponse,
     ProductListItemResponse,
     ProductPipelineResponse,
     ProductRecordResponse,
     ProductVariantResponse,
+    SectionValidationResponse,
+    SeoInsightsResponse,
     ShopifyResponse,
     TikTokResponse,
 )
@@ -97,6 +108,154 @@ class ProductService:
         )
         self.store.save(record, user_id=current_user.user_id if current_user is not None else None)
         return record
+
+    def create_product_from_pipeline(
+        self,
+        *,
+        product: ProductPipelineResponse,
+        current_user: AuthenticatedUser | None = None,
+        status: str = "draft",
+    ) -> ProductRecordResponse:
+        record = ProductRecordResponse(
+            id=self._new_id(),
+            status=status,  # type: ignore[arg-type]
+            created_at=self._timestamp(),
+            updated_at=self._timestamp(),
+            run_id=self.output_service.create_run_dir().name,
+            product=product,
+            variants=MarketplaceVariantsResponse(),
+        )
+        self.store.save(record, user_id=current_user.user_id if current_user is not None else None)
+        return record
+
+    def create_imported_draft(
+        self,
+        *,
+        title: str,
+        sku: str,
+        brand: str,
+        category: str,
+        product_type: str,
+        description: str,
+        price: str,
+        quantity: str,
+        color: str,
+        size: str,
+        material: str,
+        image_url: str,
+        current_user: AuthenticatedUser | None = None,
+    ) -> ProductRecordResponse:
+        product = self.build_imported_product(
+            title=title,
+            sku=sku,
+            brand=brand,
+            category=category,
+            product_type=product_type,
+            description=description,
+            price=price,
+            quantity=quantity,
+            color=color,
+            size=size,
+            material=material,
+            image_url=image_url,
+        )
+        run_id = self.output_service.create_run_dir().name
+        record = ProductRecordResponse(
+            id=self._new_id(),
+            status="draft",
+            created_at=self._timestamp(),
+            updated_at=self._timestamp(),
+            run_id=run_id,
+            product=product,
+            variants=MarketplaceVariantsResponse(),
+        )
+        self.store.save(record, user_id=current_user.user_id if current_user is not None else None)
+        return record
+
+    def build_imported_product(
+        self,
+        *,
+        title: str,
+        sku: str,
+        brand: str,
+        category: str,
+        product_type: str,
+        description: str,
+        price: str,
+        quantity: str,
+        color: str,
+        size: str,
+        material: str,
+        image_url: str,
+    ) -> ProductPipelineResponse:
+        normalized_title = title or "Untitled Imported Product"
+        attributes = {
+            key: value
+            for key, value in {
+                "sku": sku,
+                "brand": brand,
+                "price": price,
+                "quantity": quantity,
+                "color": color,
+                "size": size,
+                "material": material,
+            }.items()
+            if value.strip()
+        }
+        core = CoreProductResponse(
+            normalized_title=normalized_title,
+            category=category or "General Merchandise",
+            product_type=product_type or "general product",
+            product_summary=description or "",
+            features=[],
+            attributes=attributes,
+            source_title=title or normalized_title,
+            vision_confidence=0.0,
+        )
+        amazon = AmazonResponse(
+            title=normalized_title,
+            bullet_points=[],
+            description=description or "",
+            backend_search_terms=[],
+            structured_attributes={key.title(): value for key, value in attributes.items()},
+        )
+        ebay = EbayResponse(
+            title=normalized_title[:80],
+            item_specifics={key.title(): value for key, value in attributes.items()},
+            condition="New",
+            listing_notes=description or "",
+        )
+        etsy = EtsyResponse(
+            title=normalized_title[:140],
+            description=description or "",
+            tags=[],
+            materials=[material] if material else [],
+            occasion="",
+            seo_keywords=[],
+        )
+        tiktok = TikTokResponse(
+            title=normalized_title,
+            social_description=description or "",
+            hashtags=[],
+        )
+        shopify = ShopifyResponse(
+            title=normalized_title,
+            body_html=f"<p>{description}</p>" if description else "",
+            tags=[],
+            product_type=product_type or "",
+            seo_title=normalized_title[:70],
+            seo_description=(description or "")[:180],
+        )
+        return ProductPipelineResponse(
+            core=core,
+            amazon=amazon,
+            ebay=ebay,
+            etsy=etsy,
+            tiktok=tiktok,
+            shopify=shopify,
+            images=self._empty_generated_images(image_url=image_url),
+            intelligence=self._empty_intelligence(),
+        )
 
     def list_products(self, current_user: AuthenticatedUser | None = None) -> list[ProductListItemResponse]:
         return self.store.list(user_id=current_user.user_id if current_user is not None else None)
@@ -525,6 +684,152 @@ class ProductService:
     @staticmethod
     def _timestamp() -> str:
         return datetime.now(UTC).isoformat()
+
+    @staticmethod
+    def _empty_generated_images(*, image_url: str) -> GeneratedImagesResponse:
+        source_path = image_url.strip()
+        return GeneratedImagesResponse(
+            source=ProductService._placeholder_image(
+                marketplace="source",
+                generation_mode="source_passthrough" if source_path else "missing_source",
+                prompt="Imported source image reference." if source_path else "No source image was provided during import.",
+                absolute_path=source_path,
+                expected_background="source",
+                mime_type="image/jpeg",
+                has_alpha=False,
+            ),
+            transparent_cutout=ProductService._placeholder_image(
+                marketplace="transparent_cutout",
+                generation_mode="pending_import_source",
+                prompt="Transparent cutout will be generated after source imagery is available.",
+                absolute_path="",
+                expected_background="transparent",
+                mime_type="image/png",
+                has_alpha=True,
+            ),
+            amazon=ProductService._placeholder_image(
+                marketplace="amazon",
+                generation_mode="pending_import_source",
+                prompt="Amazon image not generated yet.",
+                absolute_path="",
+                expected_background="white",
+                mime_type="image/png",
+                has_alpha=False,
+            ),
+            ebay=ProductService._placeholder_image(
+                marketplace="ebay",
+                generation_mode="pending_import_source",
+                prompt="eBay image not generated yet.",
+                absolute_path="",
+                expected_background="white",
+                mime_type="image/png",
+                has_alpha=False,
+            ),
+            etsy=ProductService._placeholder_image(
+                marketplace="etsy",
+                generation_mode="pending_import_source",
+                prompt="Etsy image not generated yet.",
+                absolute_path="",
+                expected_background="styled",
+                mime_type="image/png",
+                has_alpha=False,
+            ),
+            tiktok=ProductService._placeholder_image(
+                marketplace="tiktok",
+                generation_mode="pending_import_source",
+                prompt="TikTok image not generated yet.",
+                absolute_path="",
+                expected_background="styled",
+                mime_type="image/png",
+                has_alpha=False,
+            ),
+            shopify=ProductService._placeholder_image(
+                marketplace="shopify",
+                generation_mode="pending_import_source",
+                prompt="Shopify image not generated yet.",
+                absolute_path=source_path,
+                expected_background="styled",
+                mime_type="image/png",
+                has_alpha=False,
+            ),
+        )
+
+    @staticmethod
+    def _placeholder_image(
+        *,
+        marketplace: str,
+        generation_mode: str,
+        prompt: str,
+        absolute_path: str,
+        expected_background: str,
+        mime_type: str,
+        has_alpha: bool,
+    ) -> ImageVariantResponse:
+        return ImageVariantResponse(
+            marketplace=marketplace,
+            relative_path="",
+            absolute_path=absolute_path,
+            prompt=prompt,
+            generation_mode=generation_mode,
+            mime_type=mime_type,
+            validation=ImageValidationResponse(
+                passed=bool(absolute_path) if marketplace == "source" else False,
+                width=None,
+                height=None,
+                format=None,
+                has_alpha=has_alpha,
+                file_size_bytes=0,
+                expected_width=None,
+                expected_height=None,
+                expected_background=expected_background,
+                errors=[] if absolute_path else ["No image generated yet."],
+                mime_type=mime_type,
+            ),
+        )
+
+    @staticmethod
+    def _empty_intelligence() -> IntelligenceLayerResponse:
+        def empty_market_research(marketplace: str) -> MarketplaceResearchResponse:
+            return MarketplaceResearchResponse(marketplace=marketplace)
+
+        def empty_market_pricing(marketplace: str) -> MarketplacePricingResponse:
+            return MarketplacePricingResponse(
+                marketplace=marketplace,
+                recommended=0.0,
+                floor=0.0,
+                ceiling=0.0,
+                strategy="unpriced",
+                confidence=0.0,
+                reasons=[],
+            )
+
+        empty_section = SectionValidationResponse(passed=True, issues=[])
+        return IntelligenceLayerResponse(
+            research=MarketResearchBundleResponse(
+                amazon=empty_market_research("amazon"),
+                ebay=empty_market_research("ebay"),
+                etsy=empty_market_research("etsy"),
+                tiktok=empty_market_research("tiktok"),
+                shopify=empty_market_research("shopify"),
+            ),
+            seo=SeoInsightsResponse(),
+            pricing=PricingInsightsResponse(
+                amazon=empty_market_pricing("amazon"),
+                ebay=empty_market_pricing("ebay"),
+                etsy=empty_market_pricing("etsy"),
+                tiktok=empty_market_pricing("tiktok"),
+                shopify=empty_market_pricing("shopify"),
+            ),
+            validation=PipelineValidationResponse(
+                core=empty_section,
+                amazon=empty_section,
+                ebay=empty_section,
+                etsy=empty_section,
+                tiktok=empty_section,
+                shopify=empty_section,
+                images=empty_section,
+            ),
+        )
 
     @staticmethod
     def _load_source_image(record: ProductRecordResponse) -> ImagePayload:

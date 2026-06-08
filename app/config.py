@@ -18,6 +18,7 @@ class Settings(BaseModel):
     supported_marketplaces: tuple[str, ...] = ("amazon", "tiktok", "ebay", "shopify")
     output_dir: str = "output"
     product_store_dir: str = "output/products"
+    import_store_dir: str = "output/imports"
     local_output_enabled: bool = False
     auth_enabled: bool = False
     jwt_access_secret: str | None = None
@@ -25,6 +26,7 @@ class Settings(BaseModel):
     mongodb_uri: str | None = None
     mongodb_db_name: str = "product_ai_agent"
     mongodb_products_collection: str = "products"
+    mongodb_imports_collection: str = "product_imports"
     mongodb_runs_collection: str = "product_runs"
     mongodb_users_collection: str = "users"
     ollama_enabled: bool = True
@@ -59,6 +61,7 @@ def get_settings() -> Settings:
         ),
         output_dir=os.getenv("OUTPUT_DIR", "output"),
         product_store_dir=os.getenv("PRODUCT_STORE_DIR", "output/products"),
+        import_store_dir=os.getenv("IMPORT_STORE_DIR", "output/imports"),
         local_output_enabled=os.getenv("LOCAL_OUTPUT_ENABLED", "false").lower() == "true",
         auth_enabled=os.getenv("AUTH_ENABLED", "false").lower() == "true",
         jwt_access_secret=os.getenv("JWT_ACCESS_SECRET"),
@@ -66,6 +69,7 @@ def get_settings() -> Settings:
         mongodb_uri=mongodb_uri,
         mongodb_db_name=os.getenv("MONGODB_DB_NAME", "product_ai_agent"),
         mongodb_products_collection=os.getenv("MONGODB_PRODUCTS_COLLECTION", "products"),
+        mongodb_imports_collection=os.getenv("MONGODB_IMPORTS_COLLECTION", "product_imports"),
         mongodb_runs_collection=os.getenv("MONGODB_RUNS_COLLECTION", "product_runs"),
         mongodb_users_collection=os.getenv("MONGODB_USERS_COLLECTION", "users"),
         ollama_enabled=os.getenv("OLLAMA_ENABLED", "true").lower() == "true",

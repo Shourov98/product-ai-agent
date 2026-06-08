@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.schemas.response import ProductListItemResponse, ProductRecordResponse
 
 
@@ -31,7 +33,10 @@ class ProductStore:
         del user_id
         records: list[ProductListItemResponse] = []
         for path in sorted(self.base_dir.glob("*/record.json")):
-            record = self._load_record(path)
+            try:
+                record = self._load_record(path)
+            except ValidationError:
+                continue
             records.append(
                 ProductListItemResponse(
                     id=record.id,
