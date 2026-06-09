@@ -48,6 +48,7 @@ class ProductStore:
                     category=record.product.core.category,
                     product_type=record.product.core.product_type,
                     preview_image_path=record.product.images.shopify.absolute_path,
+                    default_price=self._default_price_for_record(record),
                 )
             )
         return sorted(records, key=lambda item: item.updated_at, reverse=True)
@@ -96,3 +97,17 @@ class ProductStore:
         with path.open("r", encoding="utf-8") as handle:
             payload: Any = json.load(handle)
         return ProductRecordResponse.model_validate(payload)
+
+    @staticmethod
+    def _default_price_for_record(record: ProductRecordResponse) -> str | None:
+        raw_price = record.product.core.attributes.get("price")
+        if raw_price is not None:
+            price = str(raw_price).strip()
+            if price:
+                return price
+
+        recommended = record.product.intelligence.pricing.shopify.recommended
+        if recommended > 0:
+            return f"{recommended:.2f}"
+
+        return None

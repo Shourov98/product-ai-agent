@@ -314,6 +314,7 @@ class ProductListItemResponse(BaseModel):
     category: str
     product_type: str
     preview_image_path: str
+    default_price: str | None = None
 
 
 class PaginationMetaResponse(BaseModel):
