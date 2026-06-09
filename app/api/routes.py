@@ -271,6 +271,19 @@ async def promote_product_import_duplicate(
     return service.promote_duplicate_to_primary(record_id, current_user=current_user)
 
 
+@router.post(
+    "/imports/products/{record_id}/duplicates/delete-all",
+    response_model=DuplicateResolutionResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def delete_all_product_import_duplicates(
+    record_id: str,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> DuplicateResolutionResponse:
+    service = ImportService()
+    return service.delete_all_duplicates(record_id, current_user=current_user)
+
+
 @router.get(
     "/products",
     response_model=PaginatedProductListResponse,

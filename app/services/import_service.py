@@ -163,6 +163,44 @@ class ImportService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No duplicate group found for this record.")
         return self._promote_group_primary(record.id, group_records, current_user=current_user)
 
+    def delete_all_duplicates(
+        self,
+        record_id: str,
+        current_user: AuthenticatedUser | None = None,
+    ) -> DuplicateResolutionResponse:
+        record = self.get_import(record_id, current_user=current_user)
+        all_records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
+        group_records = self._group_records_for(record, all_records)
+        if len(group_records) <= 1:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No duplicate group found for this record.")
+
+        primary = next((item for item in group_records if item.primary_record_id is None), None)
+        if primary is None:
+            primary = min(group_records, key=lambda item: (item.created_at, item.id))
+
+        duplicates = [item for item in group_records if item.id != primary.id]
+        for duplicate in duplicates:
+            self.store.delete(duplicate.id, user_id=current_user.user_id if current_user is not None else None)
+
+        refreshed_primary = self.get_import(primary.id, current_user=current_user)
+        if refreshed_primary.primary_record_id is not None or refreshed_primary.status == "duplicate":
+            refreshed_primary = refreshed_primary.model_copy(
+                update={
+                    "primary_record_id": None,
+                    "status": self._normal_status_for(
+                        product=refreshed_primary.product,
+                        linked_product_id=refreshed_primary.linked_product_id,
+                    ),
+                    "notes": [
+                        note for note in refreshed_primary.notes if note != "This import record duplicates an earlier imported record."
+                    ],
+                    "updated_at": self._timestamp(),
+                }
+            )
+            self.store.save(refreshed_primary, user_id=current_user.user_id if current_user is not None else None)
+
+        return DuplicateResolutionResponse(kind="import_group", primary=refreshed_primary, duplicates=[])
+
     async def upload_source_image(
         self,
         record_id: str,
