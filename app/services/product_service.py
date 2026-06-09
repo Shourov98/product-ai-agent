@@ -853,10 +853,16 @@ class ProductService:
             return MarketplacePricingResponse(
                 marketplace=marketplace,
                 recommended=0.0,
+                discounted_recommended=None,
                 floor=0.0,
                 ceiling=0.0,
+                market_average=0.0,
+                regular_price_average=None,
+                sale_price_average=None,
+                discount_percent_average=None,
                 strategy="unpriced",
                 confidence=0.0,
+                summary="No pricing evidence is available yet.",
                 reasons=[],
             )
 

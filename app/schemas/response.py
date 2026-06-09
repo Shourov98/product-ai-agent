@@ -17,10 +17,16 @@ def _empty_pricing_for(marketplace: str) -> "MarketplacePricingResponse":
     return MarketplacePricingResponse(
         marketplace=marketplace,
         recommended=0.0,
+        discounted_recommended=None,
         floor=0.0,
         ceiling=0.0,
+        market_average=0.0,
+        regular_price_average=None,
+        sale_price_average=None,
+        discount_percent_average=None,
         strategy="unpriced",
         confidence=0.0,
+        summary="No pricing evidence is available yet.",
         reasons=[],
     )
 
@@ -129,7 +135,11 @@ class EtsyResponse(BaseModel):
 class ResearchEvidenceResponse(BaseModel):
     source: str
     title: str
+    url: str | None = None
     price: float | None = None
+    list_price: float | None = None
+    sale_price: float | None = None
+    discount_percent: float | None = None
     currency: str = "USD"
     relevance_score: float = Field(ge=0.0, le=1.0)
     attributes: dict[str, str] = Field(default_factory=dict)
@@ -144,6 +154,9 @@ class MarketplaceResearchResponse(BaseModel):
     price_min: float | None = None
     price_max: float | None = None
     price_avg: float | None = None
+    regular_price_avg: float | None = None
+    sale_price_avg: float | None = None
+    discount_percent_avg: float | None = None
     similar_listings: list[ResearchEvidenceResponse] = Field(default_factory=list)
 
 
@@ -165,10 +178,16 @@ class SeoInsightsResponse(BaseModel):
 class MarketplacePricingResponse(BaseModel):
     marketplace: str
     recommended: float = Field(ge=0.0)
+    discounted_recommended: float | None = Field(default=None, ge=0.0)
     floor: float = Field(ge=0.0)
     ceiling: float = Field(ge=0.0)
-    strategy: str
+    market_average: float = Field(default=0.0, ge=0.0)
+    regular_price_average: float | None = Field(default=None, ge=0.0)
+    sale_price_average: float | None = Field(default=None, ge=0.0)
+    discount_percent_average: float | None = Field(default=None, ge=0.0, le=100.0)
+    strategy: str = "unpriced"
     confidence: float = Field(ge=0.0, le=1.0)
+    summary: str = "No pricing evidence is available yet."
     reasons: list[str] = Field(default_factory=list)
 
 

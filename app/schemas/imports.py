@@ -96,6 +96,13 @@ class ImportListItemResponse(BaseModel):
     catalog_conflict_product_ids: list[str] = Field(default_factory=list)
 
 
+class ImportOverviewResponse(BaseModel):
+    total_imported: int = Field(default=0, ge=0)
+    uploaded_as_product: int = Field(default=0, ge=0)
+    needs_review: int = Field(default=0, ge=0)
+    duplicates: int = Field(default=0, ge=0)
+
+
 class UploadImportAsProductResponse(BaseModel):
     import_record: ImportRecordResponse
     product_record: ProductRecordResponse
@@ -120,3 +127,4 @@ class DuplicateResolutionResponse(BaseModel):
 class PaginatedImportListResponse(BaseModel):
     items: list[ImportListItemResponse] = Field(default_factory=list)
     pagination: PaginationMetaResponse
+    summary: ImportOverviewResponse = Field(default_factory=ImportOverviewResponse)

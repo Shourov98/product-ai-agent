@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.schemas.imports import ImportListItemResponse, ImportRecordResponse, PaginatedImportListResponse
+from app.schemas.imports import ImportListItemResponse, ImportOverviewResponse, ImportRecordResponse, PaginatedImportListResponse
 from app.schemas.response import PaginationMetaResponse
 
 
@@ -73,6 +73,12 @@ class ImportStore:
                 page_size=page_size,
                 total_items=total_items,
                 total_pages=total_pages,
+            ),
+            summary=ImportOverviewResponse(
+                total_imported=total_items,
+                uploaded_as_product=sum(1 for record in records if record.status == "uploaded"),
+                needs_review=sum(1 for record in records if record.status in {"needs_review", "parse_issue"}),
+                duplicates=sum(1 for record in records if record.status == "duplicate"),
             ),
         )
 

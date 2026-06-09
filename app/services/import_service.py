@@ -93,8 +93,7 @@ class ImportService:
         return ImportUploadResponse(imported_count=len(records), records=records)
 
     def list_imports(self, current_user: AuthenticatedUser | None = None) -> list[ImportListItemResponse]:
-        records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
-        return self._build_list_items(records, current_user=current_user)
+        return self.store.list(user_id=current_user.user_id if current_user is not None else None)
 
     def list_imports_paginated(
         self,
@@ -103,22 +102,10 @@ class ImportService:
         page_size: int,
         current_user: AuthenticatedUser | None = None,
     ) -> PaginatedImportListResponse:
-        records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
-        items = self._build_list_items(records, current_user=current_user)
-        total_items = len(items)
-        total_pages = (total_items + page_size - 1) // page_size if total_items else 0
-        start = (page - 1) * page_size
-        end = start + page_size
-        from app.schemas.response import PaginationMetaResponse
-
-        return PaginatedImportListResponse(
-            items=items[start:end],
-            pagination=PaginationMetaResponse(
-                page=page,
-                page_size=page_size,
-                total_items=total_items,
-                total_pages=total_pages,
-            ),
+        return self.store.list_paginated(
+            page=page,
+            page_size=page_size,
+            user_id=current_user.user_id if current_user is not None else None,
         )
 
     def get_import(self, record_id: str, current_user: AuthenticatedUser | None = None) -> ImportRecordResponse:
@@ -140,7 +127,10 @@ class ImportService:
                 self._promote_group_primary(promoted.id, remaining, current_user=current_user)
 
     def get_duplicate_group(self, record_id: str, current_user: AuthenticatedUser | None = None) -> DuplicateResolutionResponse:
-        record = self.get_import(record_id, current_user=current_user)
+        record = self.store.get(record_id, user_id=current_user.user_id if current_user is not None else None)
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import record not found.")
+
         all_records = self.store.list_records(user_id=current_user.user_id if current_user is not None else None)
         group_records = self._group_records_for(record, all_records)
         if len(group_records) <= 1:
@@ -153,12 +143,16 @@ class ImportService:
                     catalog_matches=self._catalog_conflict_matches(catalog_conflict_ids, current_user=current_user),
                 )
             if record.duplicate_group_key:
-                primary = self._enrich_record(record, all_records)
+                primary = self._enrich_record(record, all_records, include_catalog_fallback=False)
                 return DuplicateResolutionResponse(kind="import_group", primary=primary, duplicates=[])
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No duplicate group found for this record.")
         primary = next((item for item in group_records if item.primary_record_id is None), record)
-        primary = self._enrich_record(primary, all_records)
-        duplicates = [self._enrich_record(item, all_records) for item in group_records if item.id != primary.id]
+        primary = self._enrich_record(primary, all_records, include_catalog_fallback=False)
+        duplicates = [
+            self._enrich_record(item, all_records, include_catalog_fallback=False)
+            for item in group_records
+            if item.id != primary.id
+        ]
         return DuplicateResolutionResponse(kind="import_group", primary=primary, duplicates=duplicates)
 
     def promote_duplicate_to_primary(self, record_id: str, current_user: AuthenticatedUser | None = None) -> DuplicateResolutionResponse:

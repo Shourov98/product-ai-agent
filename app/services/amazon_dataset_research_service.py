@@ -96,6 +96,9 @@ class AmazonDatasetResearchService:
             price_min=min(prices) if prices else None,
             price_max=max(prices) if prices else None,
             price_avg=round(mean(prices), 2) if prices else None,
+            regular_price_avg=round(mean(prices), 2) if prices else None,
+            sale_price_avg=None,
+            discount_percent_avg=None,
             similar_listings=listings,
         )
 

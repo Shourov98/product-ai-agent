@@ -77,6 +77,9 @@ class EbayMarketResearchService:
             price_min=min(prices) if prices else None,
             price_max=max(prices) if prices else None,
             price_avg=round(mean(prices), 2) if prices else None,
+            regular_price_avg=round(mean(prices), 2) if prices else None,
+            sale_price_avg=None,
+            discount_percent_avg=None,
             similar_listings=listings,
         )
 
@@ -152,6 +155,7 @@ class EbayMarketResearchService:
                 ResearchEvidenceResponse(
                     source="ebay",
                     title=title,
+                    url=str(item.get("itemWebUrl") or item.get("itemAffiliateWebUrl") or "").strip() or None,
                     price=price,
                     currency=str(price_block.get("currency", "USD")),
                     relevance_score=max(0.6, 0.98 - (index * 0.05)),
