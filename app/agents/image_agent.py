@@ -36,7 +36,7 @@ class ImageAgent:
             "prompt_prefix": (
                 "Create a production-grade Amazon main image. Use a pure white background. "
                 "Show a single product only. No text, no watermark, no props, no lifestyle scene. "
-                "Keep edges crisp and the product centered."
+                "Keep edges crisp, the product centered, and make the product fill about 85 percent of the frame."
             ),
         },
         "ebay": {
@@ -437,14 +437,21 @@ class ImageAgent:
                 expected_height=expected_height,
                 background=profile["background"],
                 marketplace=marketplace,
-                errors=["Transparent cutout was unavailable; white-background composition could not be performed."],
+                errors=[
+                    "Transparent cutout was unavailable; white-background composition could not be performed.",
+                    *(
+                        ["Amazon output is blocked until a compliant cutout and pure-white composition can be generated."]
+                        if marketplace == "amazon"
+                        else []
+                    ),
+                ],
             )
             return ImageVariantResponse(
                 marketplace=marketplace,
                 relative_path=relative_path,
                 absolute_path=str(absolute_path),
                 prompt=prompt,
-                generation_mode="source_passthrough",
+                generation_mode="compliance_blocked_source_passthrough" if marketplace == "amazon" else "source_passthrough",
                 mime_type=source.content_type,
                 validation=validation,
             )
@@ -483,14 +490,21 @@ class ImageAgent:
                 expected_height=expected_height,
                 background=profile["background"],
                 marketplace=marketplace,
-                errors=[f"White-background composition failed: {exc}"],
+                errors=[
+                    f"White-background composition failed: {exc}",
+                    *(
+                        ["Amazon output is blocked until a compliant pure-white composition can be generated."]
+                        if marketplace == "amazon"
+                        else []
+                    ),
+                ],
             )
             return ImageVariantResponse(
                 marketplace=marketplace,
                 relative_path=relative_path,
                 absolute_path=str(absolute_path),
                 prompt=prompt,
-                generation_mode="source_passthrough",
+                generation_mode="compliance_blocked_source_passthrough" if marketplace == "amazon" else "source_passthrough",
                 mime_type=source.content_type,
                 validation=validation,
             )
@@ -661,16 +675,6 @@ class ImageAgent:
             offset_x = (width - resized.width) // 2
             headroom_ratio = 0.15 if marketplace == "tiktok" else 0.14
             offset_y = max(int(height * headroom_ratio), (height - resized.height) // 2 - int(height * 0.03))
-            self._draw_ground_shadow(
-                canvas,
-                product_x=offset_x,
-                product_y=offset_y,
-                product_width=resized.width,
-                product_height=resized.height,
-                shadow_opacity=profile["shadow_opacity"],
-                shadow_blur=profile["shadow_blur"],
-                shadow_offset_y=profile["shadow_offset_y"],
-            )
             canvas.alpha_composite(resized, (offset_x, offset_y))
 
             buffer = BytesIO()
@@ -903,18 +907,37 @@ class ImageAgent:
             try:
                 with Image.open(BytesIO(payload)) as image:
                     rgb_image = image.convert("RGB")
-                    sampled = [
-                        rgb_image.getpixel((0, 0)),
-                        rgb_image.getpixel((rgb_image.width - 1, 0)),
-                        rgb_image.getpixel((0, rgb_image.height - 1)),
-                        rgb_image.getpixel((rgb_image.width - 1, rgb_image.height - 1)),
-                    ]
-                    for red, green, blue in sampled:
-                        if min(red, green, blue) < 245:
-                            collected_errors.append("Expected white background, but corner pixels are not close to white.")
-                            break
+                    if marketplace == "amazon":
+                        white_issue = self._validate_amazon_white_background(rgb_image)
+                    else:
+                        white_issue = self._validate_white_background(rgb_image, strict=False)
+                    if white_issue is not None:
+                        collected_errors.append(white_issue)
             except Exception as exc:
                 collected_errors.append(f"Could not verify white background: {exc}")
+
+        if marketplace == "amazon" and Image is not None:
+            try:
+                with Image.open(BytesIO(payload)) as image:
+                    rgb_image = image.convert("RGB")
+                    fill_ratio_issue = self._validate_product_fill_ratio(rgb_image, minimum_ratio=0.85)
+                    if fill_ratio_issue is not None:
+                        collected_errors.append(fill_ratio_issue)
+            except Exception as exc:
+                collected_errors.append(f"Could not verify Amazon fill ratio: {exc}")
+
+        if marketplace in {"amazon", "ebay"} and Image is not None:
+            try:
+                with Image.open(BytesIO(payload)) as image:
+                    rgb_image = image.convert("RGB")
+                    blur_issue = self._detect_blur_issue(
+                        rgb_image,
+                        marketplace=marketplace,
+                    )
+                    if blur_issue is not None:
+                        collected_errors.append(blur_issue)
+            except Exception as exc:
+                collected_errors.append(f"Could not inspect image sharpness: {exc}")
 
         if marketplace in {"etsy", "tiktok", "shopify"} and Image is not None:
             try:
@@ -951,6 +974,157 @@ class ImageAgent:
             errors=collected_errors,
             mime_type=mime_type,
         )
+
+    def _validate_amazon_white_background(self, image) -> str | None:
+        return self._validate_white_background(
+            image,
+            strict=True,
+            min_white_ratio=0.45,
+        )
+
+    def _validate_white_background(
+        self,
+        image,
+        *,
+        strict: bool,
+        min_white_ratio: float = 0.3,
+    ) -> str | None:
+        if Image is None:
+            return None
+
+        width, height = image.size
+        white_threshold = 255 if strict else 245
+        white_pixels = 0
+        product_pixels = 0
+        min_x = width
+        min_y = height
+        max_x = -1
+        max_y = -1
+        pixels = image.load()
+
+        for y in range(height):
+            for x in range(width):
+                red, green, blue = pixels[x, y]
+                if red >= white_threshold and green >= white_threshold and blue >= white_threshold:
+                    white_pixels += 1
+                    continue
+                product_pixels += 1
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+
+        total_pixels = max(width * height, 1)
+        white_ratio = white_pixels / total_pixels
+        if white_ratio < min_white_ratio:
+            return "Expected white background, but the image does not contain enough white background area."
+
+        if product_pixels == 0:
+            return "Could not detect a product against the white background."
+
+        if min_x <= 0 or min_y <= 0 or max_x >= width - 1 or max_y >= height - 1:
+            return "Expected visible white margin around the product, but the product or non-white regions touch the frame edge."
+
+        margin = 2 if strict else 1
+        for y in range(height):
+            for x in range(width):
+                if (
+                    min_x - margin <= x <= max_x + margin
+                    and min_y - margin <= y <= max_y + margin
+                ):
+                    continue
+                red, green, blue = pixels[x, y]
+                if strict:
+                    if red != 255 or green != 255 or blue != 255:
+                        return "Amazon requires a pure white background (RGB 255,255,255) outside the product area."
+                else:
+                    if min(red, green, blue) < 245:
+                        return "Expected a clean white background outside the product area."
+
+        return None
+
+    def _validate_product_fill_ratio(self, image, *, minimum_ratio: float) -> str | None:
+        if Image is None:
+            return None
+
+        bbox = self._estimate_product_bbox_on_white(image)
+        if bbox is None:
+            return "Could not estimate product size against the white background."
+
+        min_x, min_y, max_x, max_y = bbox
+        width, height = image.size
+        product_width = max_x - min_x + 1
+        product_height = max_y - min_y + 1
+        width_ratio = product_width / max(width, 1)
+        height_ratio = product_height / max(height, 1)
+        fill_ratio = max(width_ratio, height_ratio)
+
+        if fill_ratio < minimum_ratio:
+            return (
+                f"Amazon requires the product to fill about {int(minimum_ratio * 100)}% of the frame. "
+                f"Detected fill ratio was {fill_ratio:.2f}."
+            )
+        return None
+
+    def _estimate_product_bbox_on_white(self, image) -> tuple[int, int, int, int] | None:
+        if Image is None:
+            return None
+
+        width, height = image.size
+        pixels = image.load()
+        min_x = width
+        min_y = height
+        max_x = -1
+        max_y = -1
+
+        for y in range(height):
+            for x in range(width):
+                red, green, blue = pixels[x, y]
+                if red >= 250 and green >= 250 and blue >= 250:
+                    continue
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+
+        if max_x < 0 or max_y < 0:
+            return None
+        return (min_x, min_y, max_x, max_y)
+
+    def _detect_blur_issue(self, image, *, marketplace: str) -> str | None:
+        if Image is None:
+            return None
+
+        grayscale = image.convert("L")
+        width, height = grayscale.size
+        if width < 48 or height < 48:
+            return "Image resolution is too low to verify sharpness confidently."
+
+        step = max(1, min(width, height) // 256)
+        total = 0
+        count = 0
+
+        for y in range(step, height - step, step):
+            for x in range(step, width - step, step):
+                center = grayscale.getpixel((x, y))
+                left = grayscale.getpixel((x - step, y))
+                right = grayscale.getpixel((x + step, y))
+                up = grayscale.getpixel((x, y - step))
+                down = grayscale.getpixel((x, y + step))
+                total += abs((4 * center) - left - right - up - down)
+                count += 1
+
+        if count == 0:
+            return "Image sharpness could not be evaluated."
+
+        sharpness_score = total / count
+        threshold = 14.0 if marketplace == "amazon" else 12.0
+        if sharpness_score < threshold:
+            return (
+                f"{marketplace.title()} image appears blurry or too soft for marketplace compliance. "
+                f"Detected sharpness score was {sharpness_score:.2f}."
+            )
+        return None
 
     def _detect_bottom_text_banner(self, image) -> str | None:
         if Image is None:

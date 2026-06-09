@@ -326,6 +326,37 @@ async def update_product(
 
 
 @router.post(
+    "/products/{product_id}/source-image",
+    response_model=ProductRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def upload_product_source_image(
+    product_id: str,
+    image: UploadFile = File(...),
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ProductRecordResponse:
+    settings = get_settings()
+    content = await image.read()
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image upload is empty.")
+    if len(content) > settings.max_upload_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Image exceeds configured upload limit.",
+        )
+    service = ProductService()
+    return await service.upload_source_image(
+        product_id,
+        ImagePayload(
+            filename=image.filename or "upload.bin",
+            content_type=image.content_type or "application/octet-stream",
+            data=content,
+        ),
+        current_user=current_user,
+    )
+
+
+@router.post(
     "/products/{product_id}/optimize",
     response_model=ProductRecordResponse,
     status_code=status.HTTP_200_OK,

@@ -378,6 +378,44 @@ class ProductService:
         self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
+    async def upload_source_image(
+        self,
+        product_id: str,
+        image: ImagePayload,
+        current_user: AuthenticatedUser | None = None,
+    ) -> ProductRecordResponse:
+        record = self.get_product(product_id, current_user=current_user)
+        product_dir = self.store.get_product_dir(record.id)
+        source_asset = self.image_agent._save_source(image=image, run_dir=product_dir, output_service=self.output_service)
+        cutout_asset = await self.image_agent._build_cutout(
+            image=image,
+            core_data=record.product.core,
+            run_dir=product_dir,
+            output_service=self.output_service,
+        )
+        images = self._pending_generated_images(
+            source_asset=source_asset,
+            transparent_cutout=cutout_asset,
+        )
+        validation = self.pipeline.validation.validate_pipeline(
+            core=record.product.core,
+            amazon=record.product.amazon,
+            ebay=record.product.ebay,
+            etsy=record.product.etsy,
+            tiktok=record.product.tiktok,
+            shopify=record.product.shopify,
+            images=images,
+        )
+        updated_product = record.product.model_copy(
+            update={
+                "images": images,
+                "intelligence": record.product.intelligence.model_copy(update={"validation": validation}),
+            }
+        )
+        updated = record.model_copy(update={"product": updated_product, "updated_at": self._timestamp()})
+        self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
+        return updated
+
     async def optimize_product(
         self,
         product_id: str,
@@ -806,6 +844,71 @@ class ProductService:
                 prompt="Shopify image not generated yet.",
                 absolute_path=source_path,
                 expected_background="styled",
+                mime_type="image/png",
+                has_alpha=False,
+            ),
+        )
+
+    @staticmethod
+    def _pending_generated_images(
+        *,
+        source_asset: ImageVariantResponse,
+        transparent_cutout: ImageVariantResponse | None,
+    ) -> GeneratedImagesResponse:
+        return GeneratedImagesResponse(
+            source=source_asset,
+            transparent_cutout=transparent_cutout
+            or ProductService._placeholder_image(
+                marketplace="transparent_cutout",
+                generation_mode="pending_cutout",
+                prompt="Transparent cutout is not available yet.",
+                absolute_path="",
+                expected_background="transparent",
+                mime_type="image/png",
+                has_alpha=True,
+            ),
+            amazon=ProductService._placeholder_image(
+                marketplace="amazon",
+                generation_mode="pending_marketplace_generation",
+                prompt="Generate Amazon image from the transparent cutout when needed.",
+                absolute_path="",
+                expected_background="white",
+                mime_type="image/png",
+                has_alpha=False,
+            ),
+            ebay=ProductService._placeholder_image(
+                marketplace="ebay",
+                generation_mode="pending_marketplace_generation",
+                prompt="Generate eBay image from the transparent cutout when needed.",
+                absolute_path="",
+                expected_background="white",
+                mime_type="image/png",
+                has_alpha=False,
+            ),
+            etsy=ProductService._placeholder_image(
+                marketplace="etsy",
+                generation_mode="pending_marketplace_generation",
+                prompt="Generate Etsy image from the transparent cutout when needed.",
+                absolute_path="",
+                expected_background="opaque",
+                mime_type="image/png",
+                has_alpha=False,
+            ),
+            tiktok=ProductService._placeholder_image(
+                marketplace="tiktok",
+                generation_mode="pending_marketplace_generation",
+                prompt="Generate TikTok Shop image from the transparent cutout when needed.",
+                absolute_path="",
+                expected_background="opaque",
+                mime_type="image/png",
+                has_alpha=False,
+            ),
+            shopify=ProductService._placeholder_image(
+                marketplace="shopify",
+                generation_mode="pending_marketplace_generation",
+                prompt="Generate Shopify image from the transparent cutout when needed.",
+                absolute_path="",
+                expected_background="opaque",
                 mime_type="image/png",
                 has_alpha=False,
             ),
