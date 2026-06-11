@@ -93,6 +93,13 @@ class MongoProductStore:
             ),
         )
 
+    def delete(self, product_id: str, *, user_id: str | None = None) -> bool:
+        query: dict[str, Any] = {"id": product_id}
+        if user_id is not None:
+            query["user_id"] = user_id
+        result = self.collection.delete_one(query)
+        return result.deleted_count > 0
+
     def _import_visibility_filters(self, *, user_id: str | None = None) -> tuple[set[str], set[tuple[str, str]]]:
         if self.imports_collection is None:
             return set(), set()

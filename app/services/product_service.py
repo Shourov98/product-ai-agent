@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import asyncio
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from statistics import mean, median
 from urllib.request import urlopen
 from uuid import uuid4
 
@@ -19,7 +21,12 @@ from app.agents.shopify_agent import ShopifyAgent
 from app.agents.tiktok_agent import TikTokAgent
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
-from app.schemas.request import ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
+from app.schemas.request import (
+    ProductOptimizationRequest,
+    ProductUpdateRequest,
+    PublishTargetAnalysisRequest,
+    VariantCreateRequest,
+)
 from app.schemas.response import (
     AmazonResponse,
     CoreProductResponse,
@@ -34,6 +41,7 @@ from app.schemas.response import (
     MarketResearchBundleResponse,
     MarketplaceVariantsResponse,
     PaginatedProductListResponse,
+    PublishTargetAnalysisJobResponse,
     PublishTargetAnalysisResponse,
     PipelineValidationResponse,
     ProductListItemResponse,
@@ -48,6 +56,7 @@ from app.schemas.response import (
 )
 from app.services.cloudinary_service import CloudinaryService
 from app.services.image_service import ImagePayload
+from app.services.publish_target_job_store import PublishTargetJobStore
 from app.services.mongo_product_store import MongoProductStore
 from app.services.output_service import OutputService
 from app.services.product_store import ProductStore
@@ -450,6 +459,20 @@ class ProductService:
         self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
+    def delete_product(
+        self,
+        product_id: str,
+        current_user: AuthenticatedUser | None = None,
+    ) -> None:
+        record = self.get_product(product_id, current_user=current_user)
+        user_id = current_user.user_id if current_user is not None else None
+        deleted = False
+        if hasattr(self.store, "delete"):
+            deleted = bool(self.store.delete(product_id, user_id=user_id))  # type: ignore[attr-defined]
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found.")
+        del record
+
     async def optimize_product(
         self,
         product_id: str,
@@ -588,16 +611,95 @@ class ProductService:
         self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
-    async def analyze_publish_target(
+    def start_publish_target_analysis(
         self,
         product_id: str,
         marketplace: MarketplaceLiteral,
+        payload: PublishTargetAnalysisRequest,
+        current_user: AuthenticatedUser | None = None,
+    ) -> PublishTargetAnalysisJobResponse:
+        record = self.get_product(product_id, current_user=current_user)
+        core = self._merge_publish_target_core(record.product.core, payload.product_identity)
+        preview_research = self.pipeline.research._build_marketplace_research(marketplace, core)
+        preview_result = self._build_publish_target_analysis(
+            record,
+            marketplace,
+            preview_research,
+            core=core,
+            publish_fields=payload.publish_fields.model_dump(exclude_none=True) if payload.publish_fields is not None else {},
+        )
+        job = PublishTargetJobStore.create(
+            product_id,
+            marketplace,
+            user_id=current_user.user_id if current_user is not None else None,
+            result=preview_result,
+        )
+        asyncio.create_task(
+            self._run_publish_target_analysis_job(
+                job_id=job.job_id,
+                product_id=product_id,
+                marketplace=marketplace,
+                payload=payload,
+                current_user=current_user,
+            )
+        )
+        return PublishTargetJobStore.to_response(job)
+
+    def get_publish_target_analysis_job(
+        self,
+        job_id: str,
+        current_user: AuthenticatedUser | None = None,
+    ) -> PublishTargetAnalysisJobResponse | None:
+        job = PublishTargetJobStore.get(job_id)
+        if job is None:
+            return None
+        if current_user is not None and job.user_id not in {None, current_user.user_id}:
+            return None
+        return PublishTargetJobStore.to_response(job)
+
+    async def _run_publish_target_analysis_job(
+        self,
+        *,
+        job_id: str,
+        product_id: str,
+        marketplace: MarketplaceLiteral,
+        payload: PublishTargetAnalysisRequest,
+        current_user: AuthenticatedUser | None,
+    ) -> None:
+        PublishTargetJobStore.update_running(job_id)
+        try:
+            result = await self._resolve_publish_target_analysis(
+                product_id=product_id,
+                marketplace=marketplace,
+                payload=payload,
+                current_user=current_user,
+            )
+        except Exception as exc:
+            PublishTargetJobStore.update_failed(job_id, str(exc))
+            return
+
+        PublishTargetJobStore.update_completed(job_id, result)
+
+    async def _resolve_publish_target_analysis(
+        self,
+        *,
+        product_id: str,
+        marketplace: MarketplaceLiteral,
+        payload: PublishTargetAnalysisRequest,
         current_user: AuthenticatedUser | None = None,
     ) -> PublishTargetAnalysisResponse:
         record = self.get_product(product_id, current_user=current_user)
-        research = await self.pipeline.research.build_research_bundle(record.product.core)
+        core = self._merge_publish_target_core(record.product.core, payload.product_identity)
+        publish_fields = payload.publish_fields.model_dump(exclude_none=True) if payload.publish_fields is not None else {}
+        research = await self.pipeline.research.build_research_bundle(core)
         selected_research = self._research_for_marketplace(research, marketplace)
-        fallback = self._build_publish_target_analysis(record, marketplace, selected_research)
+        fallback = self._build_publish_target_analysis(
+            record,
+            marketplace,
+            selected_research,
+            core=core,
+            publish_fields=publish_fields,
+        )
 
         openai_service = self.pipeline.openai_service
         if openai_service is None or not openai_service.enabled:
@@ -608,15 +710,8 @@ class ProductService:
                 system_prompt=PromptRegistry.get_publish_target_prompt(),
                 user_payload={
                     "marketplace": marketplace,
-                    "product_identity": {
-                        "normalized_title": record.product.core.normalized_title,
-                        "source_title": record.product.core.source_title,
-                        "category": record.product.core.category,
-                        "product_type": record.product.core.product_type,
-                        "product_summary": record.product.core.product_summary,
-                        "features": record.product.core.features,
-                        "attributes": record.product.core.attributes,
-                    },
+                    "product_identity": core.model_dump(),
+                    "publish_fields": publish_fields,
                     "product": record.product.model_dump(exclude={"images", "intelligence"}),
                     "research": selected_research.model_dump(),
                 },
@@ -718,16 +813,35 @@ class ProductService:
         record: ProductRecordResponse,
         marketplace: MarketplaceLiteral,
         research: MarketplaceResearchResponse,
+        *,
+        core: CoreProductResponse | None = None,
+        publish_fields: dict[str, object] | None = None,
     ) -> PublishTargetAnalysisResponse:
-        core = record.product.core
+        core = core or record.product.core
         product_label = self._product_identity_label(core)
-        vendor = self._publish_vendor_for_marketplace(record, marketplace)
-        sku = self._publish_sku_for_marketplace(record, marketplace)
-        description = self._publish_description_for_marketplace(record, marketplace)
+        vendor = self._coalesce_publish_field(
+            publish_fields.get("vendor") if publish_fields is not None else None,
+            self._publish_vendor_for_marketplace(record, marketplace),
+        )
+        sku = self._coalesce_publish_field(
+            publish_fields.get("default_sku") if publish_fields is not None else None,
+            self._publish_sku_for_marketplace(record, marketplace),
+        )
+        description = self._coalesce_publish_field(
+            publish_fields.get("publish_description") if publish_fields is not None else None,
+            self._publish_description_for_marketplace(record, marketplace),
+        )
         suggested = self._suggested_price_for_marketplace(core, marketplace, research)
-        default_price = suggested.recommended if suggested is not None else self._fallback_default_price(core, marketplace)
+        if suggested is not None and research.source_mode != "live_api":
+            suggested = suggested.model_copy(update={"source": "ai_market_analysis"})
+        provided_default_price = self._parse_price(publish_fields.get("default_price")) if publish_fields is not None else None
+        default_price = self._default_price_from_band(suggested, research, core, marketplace)
+        if default_price is None:
+            default_price = provided_default_price
+        if default_price is None:
+            default_price = self._fallback_default_price(core, marketplace)
         market_signal = self._market_signal_for_marketplace(marketplace, research)
-        summary = self._analysis_summary_for_marketplace(product_label, marketplace, research, default_price)
+        summary = self._analysis_summary_for_marketplace(product_label, marketplace, research, default_price, core.product_summary)
         return PublishTargetAnalysisResponse(
             marketplace=marketplace,
             vendor=vendor,
@@ -761,6 +875,55 @@ class ProductService:
             "analysis_summary": str(data.get("analysis_summary", fallback.analysis_summary)),
         }
         return PublishTargetAnalysisResponse.model_validate(payload)
+
+    @staticmethod
+    def _default_price_from_band(
+        suggested: SuggestedPriceRangeResponse | None,
+        research: MarketplaceResearchResponse,
+        core: CoreProductResponse,
+        marketplace: MarketplaceLiteral,
+    ) -> float | None:
+        if suggested is None:
+            return None
+
+        minimum = suggested.minimum
+        maximum = suggested.maximum
+        recommended = suggested.recommended
+        if maximum <= minimum:
+            return round(recommended, 2)
+
+        identity = " ".join(
+            [
+                core.normalized_title,
+                core.source_title,
+                core.category,
+                core.product_type,
+                core.product_summary,
+                " ".join(core.features),
+            ]
+        ).lower()
+        is_high_value_electronics = any(
+            keyword in identity
+            for keyword in (
+                "playstation",
+                "ps5",
+                "xbox",
+                "nintendo switch",
+                "console",
+                "gaming",
+                "electronics",
+            )
+        )
+
+        anchor_ratio = 0.78 if is_high_value_electronics else 0.66
+        if research.source_mode == "live_api":
+            anchor_ratio = max(anchor_ratio, 0.76)
+        elif marketplace in {"amazon", "shopify"}:
+            anchor_ratio = max(anchor_ratio, 0.7)
+
+        strategic_price = minimum + ((maximum - minimum) * anchor_ratio)
+        strategic_price = max(strategic_price, recommended)
+        return round(min(maximum, strategic_price), 2)
 
     @staticmethod
     def _publish_vendor_for_marketplace(record: ProductRecordResponse, marketplace: MarketplaceLiteral) -> str:
@@ -810,10 +973,9 @@ class ProductService:
 
     @staticmethod
     def _fallback_default_price(core: CoreProductResponse, marketplace: MarketplaceLiteral) -> float:
-        anchor_price = ProductService._product_price_anchor(core)
         current_price = ProductService._parse_price(core.attributes.get("price"))
-        if current_price is None or current_price < anchor_price * 0.45 or current_price > anchor_price * 2.5:
-            current_price = anchor_price
+        if current_price is None:
+            current_price = ProductService._estimate_base_price(core)
         multiplier = {
             "amazon": 1.0,
             "ebay": 0.97,
@@ -829,33 +991,36 @@ class ProductService:
         marketplace: MarketplaceLiteral,
         research: MarketplaceResearchResponse,
     ) -> SuggestedPriceRangeResponse | None:
-        anchor = ProductService._product_price_anchor(core)
-        current_price = ProductService._parse_price(core.attributes.get("price")) or anchor
-        if current_price < anchor * 0.45 or current_price > anchor * 2.5:
-            current_price = anchor
+        listing_prices = [listing.price for listing in research.similar_listings if listing.price is not None]
+        if listing_prices:
+            observed_prices = sorted(listing_prices)
+            observed_min = observed_prices[0]
+            observed_max = observed_prices[-1]
+            observed_median = median(observed_prices)
+            observed_mean = mean(observed_prices)
+            spread = observed_max - observed_min
+            if spread <= 0:
+                spread = max(0.08 * observed_median, 5.0)
 
-        minimum = research.price_min
-        maximum = research.price_max
-        average = research.price_avg or research.regular_price_avg or current_price
+            marketplace_bias = {
+                "amazon": 1.0,
+                "ebay": 0.99,
+                "etsy": 1.02,
+                "tiktok": 0.97,
+                "shopify": 1.04,
+            }[marketplace]
+            recommended = round(max(0.01, (observed_median + observed_mean) / 2 * marketplace_bias), 2)
 
-        if minimum is None or minimum < anchor * 0.7:
-            minimum = round(max(0.01, anchor * 0.9), 2)
-        if maximum is None or maximum < anchor * 0.85:
-            maximum = round(max(minimum, anchor * 1.12), 2)
-        if maximum < minimum:
-            maximum = round(minimum * 1.1, 2)
-
-        if average < anchor * 0.75:
-            average = anchor
-
-        multiplier = {
-            "amazon": 1.0,
-            "ebay": 0.97,
-            "etsy": 1.05,
-            "tiktok": 0.95,
-            "shopify": 1.08,
-        }[marketplace]
-        recommended = round(max(minimum, min(maximum, max(average, anchor) * multiplier)), 2)
+            padding = max(spread * 0.18, recommended * 0.06)
+            minimum = round(max(0.01, min(observed_min, recommended - padding)), 2)
+            maximum = round(max(observed_max, recommended + padding), 2)
+        else:
+            base_price = ProductService._estimate_base_price(core)
+            current_price = ProductService._parse_price(core.attributes.get("price")) or base_price
+            spread = max(0.18, min(0.42, 0.18 + (len(core.features) * 0.025) + (len(core.attributes) * 0.015)))
+            minimum = round(max(0.01, current_price * (1 - spread)), 2)
+            maximum = round(current_price * (1 + spread), 2)
+            recommended = round(current_price, 2)
 
         return SuggestedPriceRangeResponse(
             minimum=round(minimum, 2),
@@ -879,18 +1044,46 @@ class ProductService:
         marketplace: MarketplaceLiteral,
         research: MarketplaceResearchResponse,
         default_price: float,
+        product_summary: str = "",
     ) -> str:
+        source_label = "live market data" if research.source_mode == "live_api" else "AI market analysis"
         if research.price_min is not None and research.price_max is not None:
+            summary_part = f" {product_summary.strip()}" if product_summary.strip() else ""
             return (
-                f"{product_label} on {marketplace.title()} supports a default price around ${default_price:.2f} "
-                f"inside a ${research.price_min:.2f} to ${research.price_max:.2f} band."
+                f"{product_label} on {marketplace.title()} supports a default price around ${default_price:.2f}."
+                f"{summary_part}"
+                f" {source_label} bands from ${research.price_min:.2f} to ${research.price_max:.2f}."
             )
-        return f"{product_label} on {marketplace.title()} market analysis recommends a default price around ${default_price:.2f}."
+        summary_part = f" {product_summary.strip()}" if product_summary.strip() else ""
+        return f"{product_label} on {marketplace.title()} {source_label} recommends a default price around ${default_price:.2f}.{summary_part}"
 
     @staticmethod
     def _product_identity_label(core: CoreProductResponse) -> str:
         label = core.normalized_title.strip() or core.source_title.strip() or "Product"
         return re.sub(r"\s+", " ", label).strip()
+
+    @staticmethod
+    def _merge_publish_target_core(
+        core: CoreProductResponse,
+        payload: object | None,
+    ) -> CoreProductResponse:
+        if payload is None:
+            return core
+
+        payload_dict = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else {}
+        updates: dict[str, object] = {}
+        for field in ("normalized_title", "source_title", "category", "product_type", "product_summary", "features", "attributes"):
+            value = payload_dict.get(field)
+            if value is not None:
+                updates[field] = value
+        if not updates:
+            return core
+        return core.model_copy(update=updates)
+
+    @staticmethod
+    def _coalesce_publish_field(preferred: object | None, fallback: str) -> str:
+        text = str(preferred).strip() if preferred is not None else ""
+        return text or fallback
 
     @staticmethod
     def _parse_price(value: object) -> float | None:
