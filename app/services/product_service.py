@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
+import re
 from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
@@ -19,10 +19,7 @@ from app.agents.shopify_agent import ShopifyAgent
 from app.agents.tiktok_agent import TikTokAgent
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
-from app.providers.factory import get_provider
-from app.providers.kaggle_provider import KaggleProvider
 from app.schemas.request import ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
-from app.schemas.repricing import ProductMatchResponse, ProductRepricingRequest, ProductRepricingResponse
 from app.schemas.response import (
     AmazonResponse,
     CoreProductResponse,
@@ -33,19 +30,19 @@ from app.schemas.response import (
     ImageVariantResponse,
     IntelligenceLayerResponse,
     MarketplaceLiteral,
-    MarketplacePricingResponse,
     MarketplaceResearchResponse,
     MarketResearchBundleResponse,
     MarketplaceVariantsResponse,
     PaginatedProductListResponse,
+    PublishTargetAnalysisResponse,
     PipelineValidationResponse,
-    PricingInsightsResponse,
     ProductListItemResponse,
     ProductPipelineResponse,
     ProductRecordResponse,
     ProductVariantResponse,
     SectionValidationResponse,
     SeoInsightsResponse,
+    SuggestedPriceRangeResponse,
     ShopifyResponse,
     TikTokResponse,
 )
@@ -54,11 +51,48 @@ from app.services.image_service import ImagePayload
 from app.services.mongo_product_store import MongoProductStore
 from app.services.output_service import OutputService
 from app.services.product_store import ProductStore
-from app.services.repricing_engine import RepricingEngine
+from app.utils.prompts import PromptRegistry
 from app.utils.product_text import title_keywords, unique_strings
 
 
 class ProductService:
+    _PUBLISH_TARGET_SCHEMA = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "marketplace",
+            "vendor",
+            "default_sku",
+            "default_price",
+            "publish_description",
+            "suggested_price_range",
+            "market_signal",
+            "analysis_summary",
+        ],
+        "properties": {
+            "marketplace": {"type": "string"},
+            "vendor": {"type": "string"},
+            "default_sku": {"type": "string"},
+            "default_price": {"type": "string"},
+            "publish_description": {"type": "string"},
+            "suggested_price_range": {
+                "type": "object",
+                "nullable": True,
+                "additionalProperties": False,
+                "required": ["minimum", "maximum", "recommended", "currency", "source"],
+                "properties": {
+                    "minimum": {"type": "number"},
+                    "maximum": {"type": "number"},
+                    "recommended": {"type": "number"},
+                    "currency": {"type": "string"},
+                    "source": {"type": "string"},
+                },
+            },
+            "market_signal": {"type": "string"},
+            "analysis_summary": {"type": "string"},
+        },
+    }
+
     _shared_settings = None
     _shared_pipeline = None
     _shared_store = None
@@ -426,13 +460,11 @@ class ProductService:
         current_product = record.product
         research = await self.pipeline.research.build_research_bundle(current_product.core)
         seo = await self.pipeline.seo.process(current_product.core, research)
-        pricing = self.pipeline.pricing.build_pricing(research)
 
         optimized = await self.optimization_agent.process(
             product=current_product,
             research=research,
             seo=seo,
-            pricing=pricing,
             marketplaces=payload.marketplaces,
             optimize_core=payload.optimize_core,
         )
@@ -463,7 +495,6 @@ class ProductService:
             intelligence={
                 "research": research,
                 "seo": seo,
-                "pricing": pricing,
                 "validation": validation,
             },
         )
@@ -497,7 +528,6 @@ class ProductService:
         core = record.product.core
         research = await self.pipeline.research.build_research_bundle(core)
         seo = await self.pipeline.seo.process(core, research)
-        pricing = self.pipeline.pricing.build_pricing(research)
 
         amazon = record.product.amazon
         ebay = record.product.ebay
@@ -506,15 +536,15 @@ class ProductService:
         shopify = record.product.shopify
 
         if marketplace == "amazon":
-            amazon = await self.amazon_agent.process(core, research=research.amazon, seo=seo, pricing=pricing.amazon)
+            amazon = await self.amazon_agent.process(core, research=research.amazon, seo=seo)
         elif marketplace == "ebay":
-            ebay = await self.ebay_agent.process(core, research=research.ebay, seo=seo, pricing=pricing.ebay)
+            ebay = await self.ebay_agent.process(core, research=research.ebay, seo=seo)
         elif marketplace == "etsy":
-            etsy = await self.etsy_agent.process(core, research=research.etsy, seo=seo, pricing=pricing.etsy)
+            etsy = await self.etsy_agent.process(core, research=research.etsy, seo=seo)
         elif marketplace == "tiktok":
-            tiktok = await self.tiktok_agent.process(core, research=research.tiktok, seo=seo, pricing=pricing.tiktok)
+            tiktok = await self.tiktok_agent.process(core, research=research.tiktok, seo=seo)
         else:
-            shopify = await self.shopify_agent.process(core, research=research.shopify, seo=seo, pricing=pricing.shopify)
+            shopify = await self.shopify_agent.process(core, research=research.shopify, seo=seo)
 
         product_dir = self.store.get_product_dir(record.id)
         image_asset = await self.image_agent.regenerate_marketplace_asset(
@@ -551,7 +581,6 @@ class ProductService:
             intelligence={
                 "research": research,
                 "seo": seo,
-                "pricing": pricing,
                 "validation": validation,
             },
         )
@@ -559,22 +588,44 @@ class ProductService:
         self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
-    async def analyze_product_repricing(
+    async def analyze_publish_target(
         self,
         product_id: str,
-        payload: ProductRepricingRequest,
+        marketplace: MarketplaceLiteral,
         current_user: AuthenticatedUser | None = None,
-    ) -> ProductRepricingResponse:
+    ) -> PublishTargetAnalysisResponse:
         record = self.get_product(product_id, current_user=current_user)
-        provider = get_provider()
-        matched_product = self._match_repricing_product(record, provider)
-        engine = RepricingEngine(provider, self.pipeline.openai_service.client if self.pipeline.openai_service else None)
-        repricing = await engine.run(matched_product.asin, payload.strategy, payload.dry_run)
-        return ProductRepricingResponse(
-            product_id=record.id,
-            matched_product=matched_product,
-            repricing=repricing,
-        )
+        research = await self.pipeline.research.build_research_bundle(record.product.core)
+        selected_research = self._research_for_marketplace(research, marketplace)
+        fallback = self._build_publish_target_analysis(record, marketplace, selected_research)
+
+        openai_service = self.pipeline.openai_service
+        if openai_service is None or not openai_service.enabled:
+            return fallback
+
+        try:
+            data = await openai_service.generate_structured_output(
+                system_prompt=PromptRegistry.get_publish_target_prompt(),
+                user_payload={
+                    "marketplace": marketplace,
+                    "product_identity": {
+                        "normalized_title": record.product.core.normalized_title,
+                        "source_title": record.product.core.source_title,
+                        "category": record.product.core.category,
+                        "product_type": record.product.core.product_type,
+                        "product_summary": record.product.core.product_summary,
+                        "features": record.product.core.features,
+                        "attributes": record.product.core.attributes,
+                    },
+                    "product": record.product.model_dump(exclude={"images", "intelligence"}),
+                    "research": selected_research.model_dump(),
+                },
+                schema_name="publish_target_analysis",
+                schema=self._PUBLISH_TARGET_SCHEMA,
+            )
+            return self._from_publish_target_data(data, fallback)
+        except Exception:
+            return fallback
 
     def add_size_variant(
         self,
@@ -650,127 +701,253 @@ class ProductService:
             }
         )
 
-    def _match_repricing_product(
+    @staticmethod
+    def _research_for_marketplace(research: MarketResearchBundleResponse, marketplace: MarketplaceLiteral) -> MarketplaceResearchResponse:
+        if marketplace == "amazon":
+            return research.amazon
+        if marketplace == "ebay":
+            return research.ebay
+        if marketplace == "etsy":
+            return research.etsy
+        if marketplace == "tiktok":
+            return research.tiktok
+        return research.shopify
+
+    def _build_publish_target_analysis(
         self,
         record: ProductRecordResponse,
-        provider: Any,
-    ) -> ProductMatchResponse:
-        if not isinstance(provider, KaggleProvider):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Product-level repricing currently supports the Kaggle-backed Amazon provider only.",
-            )
-
-        frame = provider.products
-        if frame.empty:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Repricing dataset is unavailable.",
-            )
-
+        marketplace: MarketplaceLiteral,
+        research: MarketplaceResearchResponse,
+    ) -> PublishTargetAnalysisResponse:
         core = record.product.core
-        title = core.normalized_title or core.source_title
-        category = core.category.lower()
-        product_type = core.product_type.lower()
-        attribute_terms = [value.lower() for value in core.attributes.values() if value.strip()]
-        query_terms = unique_strings(
-            [product_type, category, *title_keywords(title), *attribute_terms],
-            limit=8,
+        product_label = self._product_identity_label(core)
+        vendor = self._publish_vendor_for_marketplace(record, marketplace)
+        sku = self._publish_sku_for_marketplace(record, marketplace)
+        description = self._publish_description_for_marketplace(record, marketplace)
+        suggested = self._suggested_price_for_marketplace(core, marketplace, research)
+        default_price = suggested.recommended if suggested is not None else self._fallback_default_price(core, marketplace)
+        market_signal = self._market_signal_for_marketplace(marketplace, research)
+        summary = self._analysis_summary_for_marketplace(product_label, marketplace, research, default_price)
+        return PublishTargetAnalysisResponse(
+            marketplace=marketplace,
+            vendor=vendor,
+            default_sku=sku,
+            default_price=f"{default_price:.2f}",
+            publish_description=description,
+            suggested_price_range=suggested,
+            market_signal=market_signal,
+            analysis_summary=summary,
         )
-        safe_terms = [re.escape(term) for term in query_terms[:5] if term]
-        if not safe_terms:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Product data is not descriptive enough for repricing analysis.",
-            )
 
-        if "title_lower" not in frame.columns:
-            frame["title_lower"] = frame["title"].astype(str).str.lower()
-        if "category_lower" not in frame.columns:
-            frame["category_lower"] = frame["category_name"].astype(str).str.lower()
+    def _from_publish_target_data(
+        self,
+        data: dict[str, object],
+        fallback: PublishTargetAnalysisResponse,
+    ) -> PublishTargetAnalysisResponse:
+        suggested = data.get("suggested_price_range")
+        if isinstance(suggested, dict):
+            range_payload: dict[str, object] | None = suggested
+        else:
+            range_payload = None
 
-        pattern = "|".join(safe_terms)
-        candidates = frame[frame["title_lower"].str.contains(pattern, regex=True, na=False)].copy()
-        if category:
-            category_matches = candidates[candidates["category_lower"] == category]
-            if not category_matches.empty:
-                candidates = category_matches
-        if candidates.empty and title_keywords(title):
-            fallback_terms = [re.escape(term) for term in title_keywords(title)[:3]]
-            fallback_pattern = "|".join(fallback_terms)
-            candidates = frame[frame["title_lower"].str.contains(fallback_pattern, regex=True, na=False)].copy()
-        if candidates.empty:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No comparable marketplace product was found for repricing.",
-            )
+        payload: dict[str, object] = {
+            "marketplace": str(data.get("marketplace", fallback.marketplace)),
+            "vendor": str(data.get("vendor", fallback.vendor)),
+            "default_sku": str(data.get("default_sku", fallback.default_sku)),
+            "default_price": str(data.get("default_price", fallback.default_price)),
+            "publish_description": str(data.get("publish_description", fallback.publish_description)),
+            "suggested_price_range": range_payload if range_payload is not None else fallback.suggested_price_range,
+            "market_signal": str(data.get("market_signal", fallback.market_signal)),
+            "analysis_summary": str(data.get("analysis_summary", fallback.analysis_summary)),
+        }
+        return PublishTargetAnalysisResponse.model_validate(payload)
 
-        candidates["match_score"] = candidates.apply(
-            lambda row: self._score_repricing_candidate(
-                title_lower=str(row["title_lower"]),
-                category_lower=str(row["category_lower"]),
-                query_terms=query_terms,
-                product_type=product_type,
-                category=category,
-                attribute_terms=attribute_terms,
-                is_best_seller=bool(row.get("isBestSeller", False)),
-                stars=float(row.get("stars", 0.0) or 0.0),
-                reviews=int(row.get("reviews", 0) or 0),
-                bought_in_last_month=int(row.get("boughtInLastMonth", 0) or 0),
-            ),
-            axis=1,
-        )
-        top = candidates.sort_values(
-            by=["match_score", "boughtInLastMonth", "reviews", "stars"],
-            ascending=[False, False, False, False],
-        ).iloc[0]
-        score = float(top["match_score"])
-        if score < 2.0:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No confident marketplace match was found for repricing.",
-            )
+    @staticmethod
+    def _publish_vendor_for_marketplace(record: ProductRecordResponse, marketplace: MarketplaceLiteral) -> str:
+        core = record.product.core
+        vendor = core.attributes.get("brand") or core.attributes.get("vendor")
+        if vendor:
+            return vendor.strip()
+        if marketplace == "shopify":
+            return core.category or "CommandCtr"
+        return core.normalized_title.split(" ")[0] if core.normalized_title else "CommandCtr"
 
-        return ProductMatchResponse(
-            asin=str(top["asin"]),
-            title=str(top["title"]),
-            category=str(top.get("category_name", "Uncategorized")),
-            confidence=max(0.55, min(0.99, round(score / 10.0, 2))),
-            source="kaggle_dataset",
+    @staticmethod
+    def _publish_sku_for_marketplace(record: ProductRecordResponse, marketplace: MarketplaceLiteral) -> str:
+        core = record.product.core
+        sku = core.attributes.get("sku")
+        if sku and sku.strip():
+            return sku.strip()
+        prefix = marketplace[:3].upper()
+        seed = re.sub(r"[^A-Za-z0-9]+", "", core.normalized_title or core.source_title or record.id).upper()[:8]
+        if not seed:
+            seed = record.id[:8].upper()
+        return f"{prefix}-{seed}"
+
+    @staticmethod
+    def _publish_description_for_marketplace(record: ProductRecordResponse, marketplace: MarketplaceLiteral) -> str:
+        product = record.product
+        if marketplace == "amazon":
+            text = product.amazon.description
+        elif marketplace == "ebay":
+            text = product.ebay.listing_notes
+        elif marketplace == "etsy":
+            text = product.etsy.description
+        elif marketplace == "tiktok":
+            text = product.tiktok.social_description
+        else:
+            text = ProductService._strip_html(product.shopify.body_html) or product.shopify.seo_description
+
+        text = str(text or "").strip()
+        if text:
+            return text
+        return product.core.product_summary.strip() or product.core.normalized_title.strip()
+
+    @staticmethod
+    def _strip_html(value: str) -> str:
+        text = re.sub(r"<[^>]+>", " ", value or "")
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _fallback_default_price(core: CoreProductResponse, marketplace: MarketplaceLiteral) -> float:
+        anchor_price = ProductService._product_price_anchor(core)
+        current_price = ProductService._parse_price(core.attributes.get("price"))
+        if current_price is None or current_price < anchor_price * 0.45 or current_price > anchor_price * 2.5:
+            current_price = anchor_price
+        multiplier = {
+            "amazon": 1.0,
+            "ebay": 0.97,
+            "etsy": 1.05,
+            "tiktok": 0.95,
+            "shopify": 1.08,
+        }[marketplace]
+        return round(max(0.01, current_price * multiplier), 2)
+
+    @staticmethod
+    def _suggested_price_for_marketplace(
+        core: CoreProductResponse,
+        marketplace: MarketplaceLiteral,
+        research: MarketplaceResearchResponse,
+    ) -> SuggestedPriceRangeResponse | None:
+        anchor = ProductService._product_price_anchor(core)
+        current_price = ProductService._parse_price(core.attributes.get("price")) or anchor
+        if current_price < anchor * 0.45 or current_price > anchor * 2.5:
+            current_price = anchor
+
+        minimum = research.price_min
+        maximum = research.price_max
+        average = research.price_avg or research.regular_price_avg or current_price
+
+        if minimum is None or minimum < anchor * 0.7:
+            minimum = round(max(0.01, anchor * 0.9), 2)
+        if maximum is None or maximum < anchor * 0.85:
+            maximum = round(max(minimum, anchor * 1.12), 2)
+        if maximum < minimum:
+            maximum = round(minimum * 1.1, 2)
+
+        if average < anchor * 0.75:
+            average = anchor
+
+        multiplier = {
+            "amazon": 1.0,
+            "ebay": 0.97,
+            "etsy": 1.05,
+            "tiktok": 0.95,
+            "shopify": 1.08,
+        }[marketplace]
+        recommended = round(max(minimum, min(maximum, max(average, anchor) * multiplier)), 2)
+
+        return SuggestedPriceRangeResponse(
+            minimum=round(minimum, 2),
+            maximum=round(maximum, 2),
+            recommended=recommended,
+            currency="USD",
+            source=research.source_mode or "market_research",
         )
 
     @staticmethod
-    def _score_repricing_candidate(
-        *,
-        title_lower: str,
-        category_lower: str,
-        query_terms: list[str],
-        product_type: str,
-        category: str,
-        attribute_terms: list[str],
-        is_best_seller: bool,
-        stars: float,
-        reviews: int,
-        bought_in_last_month: int,
-    ) -> float:
-        keyword_matches = sum(1.5 for term in query_terms if term and term in title_lower)
-        product_type_bonus = 2.0 if product_type and product_type in title_lower else 0.0
-        category_bonus = 2.0 if category and category == category_lower else 0.0
-        attribute_bonus = sum(0.75 for term in attribute_terms[:4] if term and term in title_lower)
-        bestseller_bonus = 1.0 if is_best_seller else 0.0
-        rating_bonus = min(1.0, stars / 5.0)
-        review_bonus = min(1.5, reviews / 4000)
-        velocity_bonus = min(1.5, bought_in_last_month / 1500)
-        return (
-            keyword_matches
-            + product_type_bonus
-            + category_bonus
-            + attribute_bonus
-            + bestseller_bonus
-            + rating_bonus
-            + review_bonus
-            + velocity_bonus
-        )
+    def _market_signal_for_marketplace(marketplace: MarketplaceLiteral, research: MarketplaceResearchResponse) -> str:
+        signals = ", ".join(research.keyword_signals[:4])
+        source = research.source_mode.replace("_", " ")
+        if signals:
+            return f"{marketplace.title()} {source}: {signals}"
+        return f"{marketplace.title()} {source}"
+
+    @staticmethod
+    def _analysis_summary_for_marketplace(
+        product_label: str,
+        marketplace: MarketplaceLiteral,
+        research: MarketplaceResearchResponse,
+        default_price: float,
+    ) -> str:
+        if research.price_min is not None and research.price_max is not None:
+            return (
+                f"{product_label} on {marketplace.title()} supports a default price around ${default_price:.2f} "
+                f"inside a ${research.price_min:.2f} to ${research.price_max:.2f} band."
+            )
+        return f"{product_label} on {marketplace.title()} market analysis recommends a default price around ${default_price:.2f}."
+
+    @staticmethod
+    def _product_identity_label(core: CoreProductResponse) -> str:
+        label = core.normalized_title.strip() or core.source_title.strip() or "Product"
+        return re.sub(r"\s+", " ", label).strip()
+
+    @staticmethod
+    def _parse_price(value: object) -> float | None:
+        try:
+            parsed = float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        if parsed <= 0:
+            return None
+        return round(parsed, 2)
+
+    @staticmethod
+    def _estimate_base_price(core: CoreProductResponse) -> float:
+        identity = " ".join(
+            [
+                core.normalized_title,
+                core.source_title,
+                core.category,
+                core.product_type,
+                " ".join(core.features),
+                " ".join(f"{key}:{value}" for key, value in core.attributes.items()),
+            ]
+        ).lower()
+
+        if any(keyword in identity for keyword in ("ps5", "playstation 5", "playstation5", "sony playstation 5", "sony ps5", "ps 5")):
+            return 499.99
+        if any(keyword in identity for keyword in ("xbox series x", "xbox series s", "xbox", "gaming console", "video game console", "game console", "console")):
+            if "series s" in identity:
+                return 299.99
+            return 399.99 if "console" in identity and "gaming" not in identity else 499.99
+        if any(keyword in identity for keyword in ("nintendo switch", "switch oled", "switch lite")):
+            if "lite" in identity:
+                return 199.99
+            return 299.99
+
+        baseline = 14.99
+        category = core.category.lower()
+        product_type = core.product_type.lower()
+        attributes = core.attributes
+
+        if "drink" in category or "bottle" in product_type:
+            baseline = 24.99
+        elif "footwear" in category or "shoe" in product_type:
+            baseline = 69.99
+        elif "electronics" in category or "case" in product_type:
+            baseline = 39.99
+        elif "fashion" in category:
+            baseline = 34.99
+
+        if "material" in attributes:
+            baseline += 4.0
+        if "size" in attributes or "capacity" in attributes:
+            baseline += 2.5
+        if "brand" in attributes:
+            baseline += 3.0
+
+        return baseline
 
     @staticmethod
     def _new_id() -> str:
@@ -952,23 +1129,6 @@ class ProductService:
         def empty_market_research(marketplace: str) -> MarketplaceResearchResponse:
             return MarketplaceResearchResponse(marketplace=marketplace)
 
-        def empty_market_pricing(marketplace: str) -> MarketplacePricingResponse:
-            return MarketplacePricingResponse(
-                marketplace=marketplace,
-                recommended=0.0,
-                discounted_recommended=None,
-                floor=0.0,
-                ceiling=0.0,
-                market_average=0.0,
-                regular_price_average=None,
-                sale_price_average=None,
-                discount_percent_average=None,
-                strategy="unpriced",
-                confidence=0.0,
-                summary="No pricing evidence is available yet.",
-                reasons=[],
-            )
-
         empty_section = SectionValidationResponse(passed=True, issues=[])
         return IntelligenceLayerResponse(
             research=MarketResearchBundleResponse(
@@ -979,13 +1139,6 @@ class ProductService:
                 shopify=empty_market_research("shopify"),
             ),
             seo=SeoInsightsResponse(),
-            pricing=PricingInsightsResponse(
-                amazon=empty_market_pricing("amazon"),
-                ebay=empty_market_pricing("ebay"),
-                etsy=empty_market_pricing("etsy"),
-                tiktok=empty_market_pricing("tiktok"),
-                shopify=empty_market_pricing("shopify"),
-            ),
             validation=PipelineValidationResponse(
                 core=empty_section,
                 amazon=empty_section,

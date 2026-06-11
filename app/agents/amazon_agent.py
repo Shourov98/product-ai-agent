@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from app.schemas.response import AmazonResponse, CoreProductResponse, MarketplacePricingResponse, MarketplaceResearchResponse, SeoInsightsResponse
+from app.schemas.response import AmazonResponse, CoreProductResponse, MarketplaceResearchResponse, SeoInsightsResponse
 from app.services.openai_service import OpenAIService, OpenAIServiceError
 from app.services.ollama_service import OllamaService, OllamaServiceError
+from app.utils.prompts import PromptRegistry
+
 from app.utils.product_text import title_keywords, unique_strings
 
 
@@ -34,28 +36,22 @@ class AmazonAgent:
         *,
         research: MarketplaceResearchResponse | None = None,
         seo: SeoInsightsResponse | None = None,
-        pricing: MarketplacePricingResponse | None = None,
     ) -> AmazonResponse:
         fallback = AmazonResponse(
             title=self._build_title(core_data, seo),
             bullet_points=self._build_bullet_points(core_data),
-            description=self._build_description(core_data, pricing),
+            description=self._build_description(core_data),
             backend_search_terms=self._build_search_terms(core_data, research, seo),
             structured_attributes=self._build_structured_attributes(core_data, research),
         )
         if self.openai_service is not None:
             try:
                 data = await self.openai_service.generate_structured_output(
-                    system_prompt=(
-                        "You are a senior Amazon listing copywriter. Produce marketplace-ready copy only. "
-                        "Avoid mentioning confidence, normalization, AI, or internal processing. "
-                        "Keep the title concise and commercially realistic."
-                    ),
+                    system_prompt=PromptRegistry.get_copy_prompt("amazon"),
                     user_payload={
                         "core_product": core_data.model_dump(),
                         "research": research.model_dump() if research is not None else None,
                         "seo": seo.model_dump() if seo is not None else None,
-                        "pricing": pricing.model_dump() if pricing is not None else None,
                     },
                     schema_name="amazon_listing",
                     schema=self._SCHEMA,
@@ -81,13 +77,24 @@ class AmazonAgent:
         return self._from_data(result.parsed, fallback)
 
     def _from_data(self, data: dict[str, object], fallback: AmazonResponse) -> AmazonResponse:
+        from datetime import datetime, UTC
+        from app.schemas.response import AgentAuditMetadata
+        model_name = self.openai_service.model if self.openai_service and self.openai_service.enabled else "ollama"
+        audit_meta = AgentAuditMetadata(
+            prompt_version="amazon-copy.v2",
+            model_version=model_name,
+            timestamp=datetime.now(UTC).isoformat(),
+            validation_passed=True,
+        )
         return AmazonResponse(
             title=str(data.get("title", fallback.title))[:200],
             bullet_points=self._coerce_list(data.get("bullet_points"), fallback.bullet_points),
             description=str(data.get("description", fallback.description)),
             backend_search_terms=self._coerce_list(data.get("backend_search_terms"), fallback.backend_search_terms),
             structured_attributes=self._coerce_dict(data.get("structured_attributes"), fallback.structured_attributes),
+            audit=audit_meta,
         )
+
 
     @staticmethod
     def _build_title(core_data: CoreProductResponse, seo: SeoInsightsResponse | None) -> str:
@@ -108,14 +115,9 @@ class AmazonAgent:
         return bullets[:5]
 
     @staticmethod
-    def _build_description(core_data: CoreProductResponse, pricing: MarketplacePricingResponse | None) -> str:
+    def _build_description(core_data: CoreProductResponse) -> str:
         features = " ".join(core_data.features[:4])
-        price_line = (
-            f"Recommended price band centers on {pricing.recommended:.2f} USD with a {pricing.strategy} strategy."
-            if pricing is not None
-            else ""
-        )
-        return f"{core_data.product_summary} Key highlights: {features} {price_line}".strip()
+        return f"{core_data.product_summary} Key highlights: {features}".strip()
 
     @staticmethod
     def _build_search_terms(

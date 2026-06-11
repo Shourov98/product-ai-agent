@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from app.schemas.response import CoreProductResponse, EtsyResponse, MarketplacePricingResponse, MarketplaceResearchResponse, SeoInsightsResponse
+from app.schemas.response import CoreProductResponse, EtsyResponse, MarketplaceResearchResponse, SeoInsightsResponse
 from app.services.openai_service import OpenAIService, OpenAIServiceError
 from app.services.ollama_service import OllamaService, OllamaServiceError
+from app.utils.prompts import PromptRegistry
 from app.utils.product_text import title_keywords, unique_strings
+
 
 
 class EtsyAgent:
@@ -35,11 +37,10 @@ class EtsyAgent:
         *,
         research: MarketplaceResearchResponse | None = None,
         seo: SeoInsightsResponse | None = None,
-        pricing: MarketplacePricingResponse | None = None,
     ) -> EtsyResponse:
         fallback = EtsyResponse(
             title=self._build_title(core_data, seo),
-            description=self._build_description(core_data, pricing),
+            description=self._build_description(core_data),
             tags=self._build_tags(core_data, research, seo),
             materials=self._build_materials(core_data, research),
             occasion=self._build_occasion(core_data),
@@ -48,16 +49,11 @@ class EtsyAgent:
         if self.openai_service is not None:
             try:
                 data = await self.openai_service.generate_structured_output(
-                    system_prompt=(
-                        "You are a senior Etsy listing specialist. Produce handcrafted-marketplace-friendly copy and metadata. "
-                        "Focus on search relevance, descriptive clarity, and giftable buyer intent without inventing unsupported facts. "
-                        "Return only JSON matching the schema."
-                    ),
+                    system_prompt=PromptRegistry.get_copy_prompt("etsy"),
                     user_payload={
                         "core_product": core_data.model_dump(),
                         "research": research.model_dump() if research is not None else None,
                         "seo": seo.model_dump() if seo is not None else None,
-                        "pricing": pricing.model_dump() if pricing is not None else None,
                     },
                     schema_name="etsy_listing",
                     schema=self._SCHEMA,
@@ -82,6 +78,15 @@ class EtsyAgent:
         return self._from_data(result.parsed, fallback)
 
     def _from_data(self, data: dict[str, object], fallback: EtsyResponse) -> EtsyResponse:
+        from datetime import datetime, UTC
+        from app.schemas.response import AgentAuditMetadata
+        model_name = self.openai_service.model if self.openai_service and self.openai_service.enabled else "ollama"
+        audit_meta = AgentAuditMetadata(
+            prompt_version="etsy-copy.v2",
+            model_version=model_name,
+            timestamp=datetime.now(UTC).isoformat(),
+            validation_passed=True,
+        )
         return EtsyResponse(
             title=str(data.get("title", fallback.title))[:140],
             description=str(data.get("description", fallback.description)),
@@ -89,7 +94,9 @@ class EtsyAgent:
             materials=self._coerce_list(data.get("materials"), fallback.materials, limit=8),
             occasion=str(data.get("occasion", fallback.occasion))[:120],
             seo_keywords=self._coerce_list(data.get("seo_keywords"), fallback.seo_keywords, limit=16),
+            audit=audit_meta,
         )
+
 
     @staticmethod
     def _build_title(core_data: CoreProductResponse, seo: SeoInsightsResponse | None) -> str:
@@ -100,9 +107,8 @@ class EtsyAgent:
         return " ".join(part for part in parts if part)[:140]
 
     @staticmethod
-    def _build_description(core_data: CoreProductResponse, pricing: MarketplacePricingResponse | None) -> str:
-        pricing_line = f" Similar Etsy pricing centers around ${pricing.recommended:.2f}." if pricing is not None else ""
-        return f"{core_data.product_summary} Features: {' '.join(core_data.features[:4])}.{pricing_line}".strip()
+    def _build_description(core_data: CoreProductResponse) -> str:
+        return f"{core_data.product_summary} Features: {' '.join(core_data.features[:4])}.".strip()
 
     @staticmethod
     def _build_tags(

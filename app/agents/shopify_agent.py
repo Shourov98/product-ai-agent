@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from app.schemas.response import CoreProductResponse, MarketplacePricingResponse, MarketplaceResearchResponse, SeoInsightsResponse, ShopifyResponse
+from app.schemas.response import CoreProductResponse, MarketplaceResearchResponse, SeoInsightsResponse, ShopifyResponse
 from app.services.openai_service import OpenAIService, OpenAIServiceError
 from app.services.ollama_service import OllamaService, OllamaServiceError
+from app.utils.prompts import PromptRegistry
 from app.utils.product_text import title_keywords, unique_strings
+
 
 
 class ShopifyAgent:
@@ -35,7 +37,6 @@ class ShopifyAgent:
         *,
         research: MarketplaceResearchResponse | None = None,
         seo: SeoInsightsResponse | None = None,
-        pricing: MarketplacePricingResponse | None = None,
     ) -> ShopifyResponse:
         fallback = ShopifyResponse(
             title=self._build_title(core_data, seo),
@@ -43,22 +44,17 @@ class ShopifyAgent:
             tags=self._build_tags(core_data, research, seo),
             product_type=core_data.product_type.title(),
             seo_title=self._build_seo_title(core_data, seo),
-            seo_description=self._build_seo_description(core_data, pricing),
+            seo_description=self._build_seo_description(core_data),
         )
 
         if self.openai_service is not None:
             try:
                 data = await self.openai_service.generate_structured_output(
-                    system_prompt=(
-                        "You are a senior Shopify merchandising copywriter. "
-                        "Produce storefront-ready product content that feels polished, concise, and conversion-oriented. "
-                        "Do not mention AI, confidence, normalization, or internal processing."
-                    ),
+                    system_prompt=PromptRegistry.get_copy_prompt("shopify"),
                     user_payload={
                         "core_product": core_data.model_dump(),
                         "research": research.model_dump() if research is not None else None,
                         "seo": seo.model_dump() if seo is not None else None,
-                        "pricing": pricing.model_dump() if pricing is not None else None,
                     },
                     schema_name="shopify_listing",
                     schema=self._SCHEMA,
@@ -84,6 +80,15 @@ class ShopifyAgent:
         return self._from_data(result.parsed, fallback)
 
     def _from_data(self, data: dict[str, object], fallback: ShopifyResponse) -> ShopifyResponse:
+        from datetime import datetime, UTC
+        from app.schemas.response import AgentAuditMetadata
+        model_name = self.openai_service.model if self.openai_service and self.openai_service.enabled else "ollama"
+        audit_meta = AgentAuditMetadata(
+            prompt_version="shopify-copy.v2",
+            model_version=model_name,
+            timestamp=datetime.now(UTC).isoformat(),
+            validation_passed=True,
+        )
         return ShopifyResponse(
             title=str(data.get("title", fallback.title))[:160],
             body_html=str(data.get("body_html", fallback.body_html)),
@@ -91,7 +96,9 @@ class ShopifyAgent:
             product_type=str(data.get("product_type", fallback.product_type)),
             seo_title=str(data.get("seo_title", fallback.seo_title))[:70],
             seo_description=str(data.get("seo_description", fallback.seo_description))[:180],
+            audit=audit_meta,
         )
+
 
     @staticmethod
     def _build_title(core_data: CoreProductResponse, seo: SeoInsightsResponse | None) -> str:
@@ -136,9 +143,8 @@ class ShopifyAgent:
         return f"{core_data.normalized_title} | {extra}"[:70]
 
     @staticmethod
-    def _build_seo_description(core_data: CoreProductResponse, pricing: MarketplacePricingResponse | None) -> str:
-        pricing_line = f" Positioned at ${pricing.recommended:.2f} for a {pricing.strategy} offer." if pricing is not None else ""
-        return f"{core_data.product_summary} Explore features, materials, and product details.{pricing_line}"[:180]
+    def _build_seo_description(core_data: CoreProductResponse) -> str:
+        return f"{core_data.product_summary} Explore features, materials, and product details."[:180]
 
     @staticmethod
     def _coerce_list(value: object, fallback: list[str]) -> list[str]:

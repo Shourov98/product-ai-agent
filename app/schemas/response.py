@@ -13,24 +13,6 @@ def _empty_research_for(marketplace: str) -> "MarketplaceResearchResponse":
     return MarketplaceResearchResponse(marketplace=marketplace)
 
 
-def _empty_pricing_for(marketplace: str) -> "MarketplacePricingResponse":
-    return MarketplacePricingResponse(
-        marketplace=marketplace,
-        recommended=0.0,
-        discounted_recommended=None,
-        floor=0.0,
-        ceiling=0.0,
-        market_average=0.0,
-        regular_price_average=None,
-        sale_price_average=None,
-        discount_percent_average=None,
-        strategy="unpriced",
-        confidence=0.0,
-        summary="No pricing evidence is available yet.",
-        reasons=[],
-    )
-
-
 def _empty_intelligence() -> "IntelligenceLayerResponse":
     return IntelligenceLayerResponse(
         research=MarketResearchBundleResponse(
@@ -41,13 +23,6 @@ def _empty_intelligence() -> "IntelligenceLayerResponse":
             shopify=_empty_research_for("shopify"),
         ),
         seo=SeoInsightsResponse(),
-        pricing=PricingInsightsResponse(
-            amazon=_empty_pricing_for("amazon"),
-            ebay=_empty_pricing_for("ebay"),
-            etsy=_empty_pricing_for("etsy"),
-            tiktok=_empty_pricing_for("tiktok"),
-            shopify=_empty_pricing_for("shopify"),
-        ),
         validation=PipelineValidationResponse(
             core=_empty_section_validation(),
             amazon=_empty_section_validation(),
@@ -82,6 +57,13 @@ class VisionResponse(BaseModel):
     image_analysis: ImageAnalysis
 
 
+class AgentAuditMetadata(BaseModel):
+    prompt_version: str
+    model_version: str
+    timestamp: str
+    validation_passed: bool
+
+
 class CoreProductResponse(BaseModel):
     normalized_title: str
     category: str
@@ -91,6 +73,7 @@ class CoreProductResponse(BaseModel):
     attributes: dict[str, str]
     source_title: str
     vision_confidence: float = Field(ge=0.0, le=1.0)
+    audit: AgentAuditMetadata | None = None
 
 
 class AmazonResponse(BaseModel):
@@ -99,12 +82,14 @@ class AmazonResponse(BaseModel):
     description: str
     backend_search_terms: list[str]
     structured_attributes: dict[str, str]
+    audit: AgentAuditMetadata | None = None
 
 
 class TikTokResponse(BaseModel):
     title: str
     social_description: str
     hashtags: list[str]
+    audit: AgentAuditMetadata | None = None
 
 
 class EbayResponse(BaseModel):
@@ -112,6 +97,7 @@ class EbayResponse(BaseModel):
     item_specifics: dict[str, str]
     condition: str
     listing_notes: str
+    audit: AgentAuditMetadata | None = None
 
 
 class ShopifyResponse(BaseModel):
@@ -121,6 +107,7 @@ class ShopifyResponse(BaseModel):
     product_type: str
     seo_title: str
     seo_description: str
+    audit: AgentAuditMetadata | None = None
 
 
 class EtsyResponse(BaseModel):
@@ -130,6 +117,8 @@ class EtsyResponse(BaseModel):
     materials: list[str]
     occasion: str
     seo_keywords: list[str]
+    audit: AgentAuditMetadata | None = None
+
 
 
 class ResearchEvidenceResponse(BaseModel):
@@ -173,30 +162,6 @@ class SeoInsightsResponse(BaseModel):
     secondary_keywords: list[str] = Field(default_factory=list)
     title_terms: list[str] = Field(default_factory=list)
     marketplace_keywords: dict[str, list[str]] = Field(default_factory=dict)
-
-
-class MarketplacePricingResponse(BaseModel):
-    marketplace: str
-    recommended: float = Field(ge=0.0)
-    discounted_recommended: float | None = Field(default=None, ge=0.0)
-    floor: float = Field(ge=0.0)
-    ceiling: float = Field(ge=0.0)
-    market_average: float = Field(default=0.0, ge=0.0)
-    regular_price_average: float | None = Field(default=None, ge=0.0)
-    sale_price_average: float | None = Field(default=None, ge=0.0)
-    discount_percent_average: float | None = Field(default=None, ge=0.0, le=100.0)
-    strategy: str = "unpriced"
-    confidence: float = Field(ge=0.0, le=1.0)
-    summary: str = "No pricing evidence is available yet."
-    reasons: list[str] = Field(default_factory=list)
-
-
-class PricingInsightsResponse(BaseModel):
-    amazon: MarketplacePricingResponse
-    ebay: MarketplacePricingResponse
-    etsy: MarketplacePricingResponse
-    tiktok: MarketplacePricingResponse
-    shopify: MarketplacePricingResponse
 
 
 class ImageValidationResponse(BaseModel):
@@ -257,7 +222,6 @@ class PipelineValidationResponse(BaseModel):
 class IntelligenceLayerResponse(BaseModel):
     research: MarketResearchBundleResponse
     seo: SeoInsightsResponse
-    pricing: PricingInsightsResponse
     validation: PipelineValidationResponse
 
 
@@ -314,7 +278,25 @@ class ProductListItemResponse(BaseModel):
     category: str
     product_type: str
     preview_image_path: str
-    default_price: str | None = None
+
+
+class SuggestedPriceRangeResponse(BaseModel):
+    minimum: float = Field(gt=0)
+    maximum: float = Field(gt=0)
+    recommended: float = Field(gt=0)
+    currency: str = "USD"
+    source: str = "market_research"
+
+
+class PublishTargetAnalysisResponse(BaseModel):
+    marketplace: MarketplaceLiteral
+    vendor: str
+    default_sku: str
+    default_price: str
+    publish_description: str
+    suggested_price_range: SuggestedPriceRangeResponse | None = None
+    market_signal: str = ""
+    analysis_summary: str = ""
 
 
 class PaginationMetaResponse(BaseModel):

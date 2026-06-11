@@ -1,3 +1,7 @@
+# Obsolete Guide
+
+The dataset-backed repricing flow described here has been removed from the active product AI agent. This file is kept only as historical reference.
+
 # How To Swap Kaggle Dataset For Real Amazon SP-API
 
 The repricing system uses dependency inversion:

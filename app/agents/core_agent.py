@@ -68,6 +68,15 @@ class CoreAgent:
         title: str,
         vision_data: VisionResponse,
     ) -> CoreProductResponse:
+        from datetime import datetime, UTC
+        from app.schemas.response import AgentAuditMetadata
+        model_name = self.openai_service.model if self.openai_service and self.openai_service.enabled else "ollama"
+        audit_meta = AgentAuditMetadata(
+            prompt_version="core.v3",
+            model_version=model_name,
+            timestamp=datetime.now(UTC).isoformat(),
+            validation_passed=True,
+        )
         return CoreProductResponse(
             normalized_title=str(data.get("normalized_title", fallback.normalized_title)),
             category=str(data.get("category", fallback.category)),
@@ -77,7 +86,9 @@ class CoreAgent:
             attributes=self._ensure_string_dict(data.get("attributes"), fallback.attributes),
             source_title=title,
             vision_confidence=vision_data.confidence,
+            audit=audit_meta,
         )
+
 
     def _build_fallback(self, title: str, vision_data: VisionResponse) -> CoreProductResponse:
         normalized_title = normalize_title(title)
@@ -100,13 +111,8 @@ class CoreAgent:
 
     @staticmethod
     def _build_openai_system_prompt() -> str:
-        return (
-            "You are a senior ecommerce catalog normalization agent. "
-            "Produce production-grade product data from a source title and lightweight vision cues. "
-            "Write commercially useful, concise output. Avoid mentioning internal confidence, normalization, pipelines, or AI. "
-            "Do not invent certifications, dimensions, or unsupported claims. "
-            "Return only JSON matching the provided schema."
-        )
+        from app.utils.prompts import PromptRegistry
+        return PromptRegistry.get_core_prompt()
 
     @staticmethod
     def _build_user_payload(title: str, vision_data: VisionResponse) -> dict[str, object]:
@@ -120,11 +126,10 @@ class CoreAgent:
 
     @staticmethod
     def _build_prompt(title: str, vision_data: VisionResponse) -> str:
+        from app.utils.prompts import PromptRegistry
+        system_prompt = PromptRegistry.get_core_prompt()
         return (
-            "You are a senior ecommerce catalog normalization agent. Return only valid JSON with keys "
-            "normalized_title, category, product_type, product_summary, features, attributes. "
-            "features must be an array of strings. attributes must be an object of string keys and values.\n"
-            "Write customer-facing product data, not internal notes. Avoid mentioning AI, confidence, or normalization.\n"
+            f"{system_prompt}\n\n"
             f"Input title: {title}\n"
             f"Vision product_type: {vision_data.product_type}\n"
             f"Vision confidence: {vision_data.confidence}\n"

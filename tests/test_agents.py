@@ -4,8 +4,10 @@ import asyncio
 from io import BytesIO
 
 from app.agents.amazon_agent import AmazonAgent
+from app.agents.ebay_agent import EbayAgent
 from app.agents.core_agent import CoreAgent
 from app.agents.vision_agent import VisionAgent
+from app.schemas.response import EbayResponse
 from app.services.image_service import ImagePayload
 from PIL import Image
 
@@ -49,6 +51,32 @@ def test_amazon_agent_generates_listing_fields() -> None:
     assert listing.title
     assert isinstance(listing.bullet_points, list)
     assert "color" in listing.structured_attributes
+
+
+def test_ebay_agent_coerces_list_specifics_to_strings() -> None:
+    agent = EbayAgent()
+    fallback = EbayResponse(
+        title="Fallback Title",
+        item_specifics={"Brand": "Example"},
+        condition="New",
+        listing_notes="Fallback notes",
+    )
+
+    result = agent._from_data(
+        {
+            "title": "Custom Title",
+            "item_specifics": {
+                "Features": ["Ultra-High-Speed SSD", "Backward Compatibility"],
+                "Condition": "New",
+            },
+            "condition": "New",
+            "listing_notes": "Optimized notes",
+        },
+        fallback,
+    )
+
+    assert result.item_specifics["Features"] == "Ultra-High-Speed SSD, Backward Compatibility"
+    assert result.item_specifics["Condition"] == "New"
 
 
 def test_vision_agent_can_identify_compound_blue_family() -> None:

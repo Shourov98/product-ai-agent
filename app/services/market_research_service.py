@@ -3,7 +3,6 @@ from __future__ import annotations
 from statistics import mean
 
 from app.config import Settings
-from app.services.amazon_dataset_research_service import AmazonDatasetResearchService
 from app.schemas.response import (
     CoreProductResponse,
     MarketResearchBundleResponse,
@@ -11,7 +10,6 @@ from app.schemas.response import (
     ResearchEvidenceResponse,
 )
 from app.services.ebay_market_research_service import EbayMarketResearchService, EbayMarketResearchServiceError
-from app.services.search_price_research_service import SearchPriceResearchService
 from app.utils.product_text import title_keywords, unique_strings
 
 
@@ -34,7 +32,6 @@ class MarketResearchService:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.amazon_dataset = AmazonDatasetResearchService(enabled=True)
         self.ebay_live = EbayMarketResearchService(
             enabled=settings.market_research_realtime_enabled and settings.ebay_research_enabled,
             client_id=settings.ebay_client_id,
@@ -43,11 +40,6 @@ class MarketResearchService:
             api_base_url=settings.ebay_api_base_url,
             identity_base_url=settings.ebay_identity_base_url,
             search_limit=settings.ebay_search_limit,
-        )
-        self.search_research = SearchPriceResearchService(
-            enabled=settings.search_price_research_enabled,
-            timeout_seconds=settings.search_price_timeout_seconds,
-            result_limit=settings.search_price_result_limit,
         )
 
     async def build_research_bundle(self, core_data: CoreProductResponse) -> MarketResearchBundleResponse:
@@ -65,15 +57,7 @@ class MarketResearchService:
         )
 
     async def _build_amazon_marketplace_research(self, core_data: CoreProductResponse) -> MarketplaceResearchResponse:
-        dataset_result = self.amazon_dataset.search(
-            title=core_data.normalized_title,
-            product_type=core_data.product_type,
-            category=core_data.category,
-            attributes=core_data.attributes,
-        )
-        fallback = dataset_result or self._build_marketplace_research("amazon", core_data)
-        search_result = await self.search_research.search("amazon", fallback.search_queries, core_data.attributes)
-        return self._merge_marketplace_research(fallback, search_result)
+        return self._build_marketplace_research("amazon", core_data)
 
     async def _build_ebay_marketplace_research(self, core_data: CoreProductResponse) -> MarketplaceResearchResponse:
         fallback = self._build_marketplace_research("ebay", core_data)
@@ -89,17 +73,14 @@ class MarketResearchService:
             )
         if live is not None:
             live = live.model_copy(update={"source_mode": "live_api"})
-        search_result = await self.search_research.search("ebay", queries, core_data.attributes)
-        return self._merge_marketplace_research(live or fallback, search_result)
+        return live or fallback
 
     async def _build_search_augmented_marketplace_research(
         self,
         marketplace: str,
         core_data: CoreProductResponse,
     ) -> MarketplaceResearchResponse:
-        fallback = self._build_marketplace_research(marketplace, core_data)
-        search_result = await self.search_research.search(marketplace, fallback.search_queries, core_data.attributes)
-        return self._merge_marketplace_research(fallback, search_result)
+        return self._build_marketplace_research(marketplace, core_data)
 
     def _build_marketplace_research(
         self,
@@ -125,35 +106,6 @@ class MarketResearchService:
             sale_price_avg=None,
             discount_percent_avg=None,
             similar_listings=listings,
-        )
-
-    def _merge_marketplace_research(
-        self,
-        primary: MarketplaceResearchResponse,
-        secondary: MarketplaceResearchResponse | None,
-    ) -> MarketplaceResearchResponse:
-        if secondary is None or not secondary.similar_listings:
-            return primary
-
-        merged_listings = [*secondary.similar_listings, *primary.similar_listings]
-        price_values = [item.price for item in merged_listings if item.price is not None]
-        regular_values = [item.list_price for item in merged_listings if item.list_price is not None]
-        sale_values = [item.sale_price for item in merged_listings if item.sale_price is not None]
-        discount_values = [item.discount_percent for item in merged_listings if item.discount_percent is not None]
-
-        return primary.model_copy(
-            update={
-                "source_mode": f"{primary.source_mode}+{secondary.source_mode}",
-                "keyword_signals": unique_strings(primary.keyword_signals + secondary.keyword_signals, limit=12),
-                "search_queries": unique_strings(primary.search_queries + secondary.search_queries, limit=6),
-                "price_min": min(price_values) if price_values else primary.price_min,
-                "price_max": max(price_values) if price_values else primary.price_max,
-                "price_avg": round(mean(price_values), 2) if price_values else primary.price_avg,
-                "regular_price_avg": round(mean(regular_values), 2) if regular_values else primary.regular_price_avg,
-                "sale_price_avg": round(mean(sale_values), 2) if sale_values else primary.sale_price_avg,
-                "discount_percent_avg": round(mean(discount_values), 2) if discount_values else primary.discount_percent_avg,
-                "similar_listings": sorted(merged_listings, key=lambda item: item.relevance_score, reverse=True)[:6],
-            }
         )
 
     def _build_queries(self, marketplace: str, core_data: CoreProductResponse) -> list[str]:
@@ -263,6 +215,28 @@ class MarketResearchService:
 
     @staticmethod
     def _estimate_base_price(core_data: CoreProductResponse) -> float:
+        identity = " ".join(
+            [
+                core_data.normalized_title,
+                core_data.source_title,
+                core_data.category,
+                core_data.product_type,
+                " ".join(core_data.features),
+                " ".join(f"{key}:{value}" for key, value in core_data.attributes.items()),
+            ]
+        ).lower()
+
+        if any(keyword in identity for keyword in ("ps5", "playstation 5", "playstation5", "sony playstation 5", "sony ps5", "ps 5")):
+            return 499.99
+        if any(keyword in identity for keyword in ("xbox series x", "xbox series s", "xbox", "gaming console", "video game console", "game console", "console")):
+            if "series s" in identity:
+                return 299.99
+            return 399.99 if "console" in identity and "gaming" not in identity else 499.99
+        if any(keyword in identity for keyword in ("nintendo switch", "switch oled", "switch lite")):
+            if "lite" in identity:
+                return 199.99
+            return 299.99
+
         baseline = 14.99
         category = core_data.category.lower()
         product_type = core_data.product_type.lower()
@@ -273,7 +247,7 @@ class MarketResearchService:
         elif "footwear" in category or "shoe" in product_type:
             baseline = 69.99
         elif "electronics" in category or "case" in product_type:
-            baseline = 19.99
+            baseline = 39.99
         elif "fashion" in category:
             baseline = 34.99
 

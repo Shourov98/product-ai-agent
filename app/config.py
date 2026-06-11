@@ -35,7 +35,7 @@ class Settings(BaseModel):
     ollama_model: str = "qwen3:8b"
     openai_enabled: bool = False
     openai_api_key: str | None = None
-    openai_model: str = "gpt-5"
+    openai_model: str = "gpt-4o"
     openai_image_model: str = "gpt-image-1"
     cloudinary_cloud_name: str | None = None
     cloudinary_api_key: str | None = None
@@ -50,9 +50,6 @@ class Settings(BaseModel):
     ebay_api_base_url: str = "https://api.ebay.com"
     ebay_identity_base_url: str = "https://api.ebay.com"
     ebay_search_limit: int = 5
-    search_price_research_enabled: bool = True
-    search_price_timeout_seconds: int = 20
-    search_price_result_limit: int = 4
 
 
 def get_settings() -> Settings:
@@ -82,7 +79,7 @@ def get_settings() -> Settings:
         ollama_model=os.getenv("OLLAMA_MODEL", "qwen3:8b"),
         openai_enabled=os.getenv("OPENAI_ENABLED", "false").lower() == "true",
         openai_api_key=os.getenv("OPENAI_API_KEY"),
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-5"),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-4o"),
         openai_image_model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1"),
         cloudinary_cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
         cloudinary_api_key=os.getenv("CLOUDINARY_API_KEY"),
@@ -97,9 +94,6 @@ def get_settings() -> Settings:
         ebay_api_base_url=os.getenv("EBAY_API_BASE_URL", "https://api.ebay.com"),
         ebay_identity_base_url=os.getenv("EBAY_IDENTITY_BASE_URL", "https://api.ebay.com"),
         ebay_search_limit=int(os.getenv("EBAY_SEARCH_LIMIT", "5")),
-        search_price_research_enabled=os.getenv("SEARCH_PRICE_RESEARCH_ENABLED", "true").lower() == "true",
-        search_price_timeout_seconds=int(os.getenv("SEARCH_PRICE_TIMEOUT_SECONDS", "20")),
-        search_price_result_limit=int(os.getenv("SEARCH_PRICE_RESULT_LIMIT", "4")),
     )
 
 

@@ -247,12 +247,10 @@ class ImportService:
         current_product = record.product
         research = await self.product_service.pipeline.research.build_research_bundle(current_product.core)
         seo = await self.product_service.pipeline.seo.process(current_product.core, research)
-        pricing = self.product_service.pipeline.pricing.build_pricing(research)
         optimized = await self.product_service.optimization_agent.process(
             product=current_product,
             research=research,
             seo=seo,
-            pricing=pricing,
             marketplaces=payload.marketplaces,
             optimize_core=payload.optimize_core,
         )
@@ -267,7 +265,6 @@ class ImportService:
             intelligence={
                 "research": research,
                 "seo": seo,
-                "pricing": pricing,
                 "validation": self.product_service.pipeline.validation.validate_pipeline(
                     core=self.product_service.optimization_agent.coerce_core(optimized.get("core"), current_product.core),
                     amazon=self.product_service.optimization_agent.coerce_amazon(optimized.get("amazon"), current_product.amazon),
@@ -306,22 +303,21 @@ class ImportService:
         core = record.product.core
         research = await self.product_service.pipeline.research.build_research_bundle(core)
         seo = await self.product_service.pipeline.seo.process(core, research)
-        pricing = self.product_service.pipeline.pricing.build_pricing(research)
         amazon = record.product.amazon
         ebay = record.product.ebay
         etsy = record.product.etsy
         tiktok = record.product.tiktok
         shopify = record.product.shopify
         if marketplace == "amazon":
-            amazon = await self.product_service.amazon_agent.process(core, research=research.amazon, seo=seo, pricing=pricing.amazon)
+            amazon = await self.product_service.amazon_agent.process(core, research=research.amazon, seo=seo)
         elif marketplace == "ebay":
-            ebay = await self.product_service.ebay_agent.process(core, research=research.ebay, seo=seo, pricing=pricing.ebay)
+            ebay = await self.product_service.ebay_agent.process(core, research=research.ebay, seo=seo)
         elif marketplace == "etsy":
-            etsy = await self.product_service.etsy_agent.process(core, research=research.etsy, seo=seo, pricing=pricing.etsy)
+            etsy = await self.product_service.etsy_agent.process(core, research=research.etsy, seo=seo)
         elif marketplace == "tiktok":
-            tiktok = await self.product_service.tiktok_agent.process(core, research=research.tiktok, seo=seo, pricing=pricing.tiktok)
+            tiktok = await self.product_service.tiktok_agent.process(core, research=research.tiktok, seo=seo)
         else:
-            shopify = await self.product_service.shopify_agent.process(core, research=research.shopify, seo=seo, pricing=pricing.shopify)
+            shopify = await self.product_service.shopify_agent.process(core, research=research.shopify, seo=seo)
         run_dir = self.product_service.output_service.create_run_dir()
         image_asset = await self.product_service.image_agent.regenerate_marketplace_asset(
             marketplace=marketplace,
@@ -348,7 +344,6 @@ class ImportService:
             intelligence={
                 "research": research,
                 "seo": seo,
-                "pricing": pricing,
                 "validation": self.product_service.pipeline.validation.validate_pipeline(
                     core=core, amazon=amazon, ebay=ebay, etsy=etsy, tiktok=tiktok, shopify=shopify, images=images
                 ),

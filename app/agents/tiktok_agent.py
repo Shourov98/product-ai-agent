@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import re
 
-from app.schemas.response import CoreProductResponse, MarketplacePricingResponse, MarketplaceResearchResponse, SeoInsightsResponse, TikTokResponse
+from app.schemas.response import CoreProductResponse, MarketplaceResearchResponse, SeoInsightsResponse, TikTokResponse
 from app.services.openai_service import OpenAIService, OpenAIServiceError
 from app.services.ollama_service import OllamaService, OllamaServiceError
+from app.utils.prompts import PromptRegistry
 from app.utils.product_text import unique_strings
+
 
 
 class TikTokAgent:
@@ -34,32 +36,20 @@ class TikTokAgent:
         *,
         research: MarketplaceResearchResponse | None = None,
         seo: SeoInsightsResponse | None = None,
-        pricing: MarketplacePricingResponse | None = None,
     ) -> TikTokResponse:
         fallback = TikTokResponse(
             title=self._build_title(core_data, seo),
-            social_description=self._build_social_description(core_data, pricing),
+            social_description=self._build_social_description(core_data),
             hashtags=self._build_hashtags(core_data, research, seo),
         )
         if self.openai_service is not None:
             try:
                 data = await self.openai_service.generate_structured_output(
-                    system_prompt=(
-                        "You are a senior TikTok Shop copywriter. "
-                        "Create TikTok-native product copy using a strong hook, clear product payoff, realistic use-case, and a light commerce CTA. "
-                        "Keep the product facts accurate. Do not invent claims, certifications, performance outcomes, or social proof. "
-                        "The social_description must read like a polished viral-style caption for TikTok Shop, not a generic product summary. "
-                        "Prefer concise mobile-friendly rhythm, natural language, and buyer-intent phrasing. "
-                        "Hashtags must be SEO-aware and commerce-relevant: mix broad category tags, niche intent tags, and product-specific tags. "
-                        "Avoid spammy tag stuffing, repeated tags, and vague filler. "
-                        "Do not mention AI, confidence, or internal processing. "
-                        "Do not include any text inside image."
-                    ),
+                    system_prompt=PromptRegistry.get_copy_prompt("tiktok"),
                     user_payload={
                         "core_product": core_data.model_dump(),
                         "research": research.model_dump() if research is not None else None,
                         "seo": seo.model_dump() if seo is not None else None,
-                        "pricing": pricing.model_dump() if pricing is not None else None,
                     },
                     schema_name="tiktok_listing",
                     schema=self._SCHEMA,
@@ -87,6 +77,15 @@ class TikTokAgent:
         return self._from_data(result.parsed, fallback)
 
     def _from_data(self, data: dict[str, object], fallback: TikTokResponse) -> TikTokResponse:
+        from datetime import datetime, UTC
+        from app.schemas.response import AgentAuditMetadata
+        model_name = self.openai_service.model if self.openai_service and self.openai_service.enabled else "ollama"
+        audit_meta = AgentAuditMetadata(
+            prompt_version="tiktok-copy.v2",
+            model_version=model_name,
+            timestamp=datetime.now(UTC).isoformat(),
+            validation_passed=True,
+        )
         title = self._clean_inline_text(str(data.get("title", fallback.title)))
         social_description = self._clean_inline_text(str(data.get("social_description", fallback.social_description)))
         hashtags = data.get("hashtags")
@@ -99,7 +98,9 @@ class TikTokAgent:
             title=title or fallback.title,
             social_description=social_description or fallback.social_description,
             hashtags=normalized_hashtags,
+            audit=audit_meta,
         )
+
 
     def _build_title(self, core_data: CoreProductResponse, seo: SeoInsightsResponse | None) -> str:
         color = core_data.attributes.get("color")
@@ -110,18 +111,13 @@ class TikTokAgent:
         title = " ".join(part for part in [core_data.normalized_title, hook] if part).strip()
         return self._truncate_text(title, 90)
 
-    def _build_social_description(self, core_data: CoreProductResponse, pricing: MarketplacePricingResponse | None) -> str:
+    def _build_social_description(self, core_data: CoreProductResponse) -> str:
         hook = self._build_hook(core_data)
         payoff = self._build_payoff(core_data)
         use_case = self._build_use_case(core_data)
         cta = self._build_soft_cta(core_data)
-        price_hint = (
-            f" Price point lands around ${pricing.recommended:.2f}."
-            if pricing is not None and pricing.recommended > 0
-            else ""
-        )
         caption = " ".join(part for part in [hook, payoff, use_case, cta] if part).strip()
-        return self._truncate_text(f"{caption}{price_hint}".strip(), 220)
+        return self._truncate_text(caption, 220)
 
     def _build_hashtags(
         self,
