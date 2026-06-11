@@ -6,8 +6,19 @@ from app.auth import AuthenticatedUser, get_optional_current_user
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
 from app.schemas.imports import DuplicateResolutionResponse, ImportRecordResponse, ImportUploadResponse, PaginatedImportListResponse, UploadImportAsProductResponse
-from app.schemas.request import MarketplaceRequestLiteral, ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
-from app.schemas.response import PaginatedProductListResponse, ProductPipelineResponse, ProductRecordResponse, PublishTargetAnalysisResponse
+from app.schemas.request import (
+    MarketplaceRequestLiteral,
+    ProductOptimizationRequest,
+    ProductUpdateRequest,
+    PublishTargetAnalysisRequest,
+    VariantCreateRequest,
+)
+from app.schemas.response import (
+    PaginatedProductListResponse,
+    ProductPipelineResponse,
+    ProductRecordResponse,
+    PublishTargetAnalysisJobResponse,
+)
 from app.services.image_service import ImagePayload
 from app.services.import_service import ImportService
 from app.services.product_service import ProductService
@@ -324,6 +335,19 @@ async def update_product(
     return service.update_product(product_id, payload, current_user=current_user)
 
 
+@router.delete(
+    "/products/{product_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_product(
+    product_id: str,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+):
+    service = ProductService()
+    service.delete_product(product_id, current_user=current_user)
+    return None
+
+
 @router.post(
     "/products/{product_id}/source-image",
     response_model=ProductRecordResponse,
@@ -385,16 +409,35 @@ async def optimize_marketplace(
 
 @router.post(
     "/products/{product_id}/marketplaces/{marketplace}/publish-target/analyze",
-    response_model=PublishTargetAnalysisResponse,
+    response_model=PublishTargetAnalysisJobResponse,
     status_code=status.HTTP_200_OK,
 )
 async def analyze_publish_target(
     product_id: str,
     marketplace: MarketplaceRequestLiteral,
+    payload: PublishTargetAnalysisRequest,
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
-) -> PublishTargetAnalysisResponse:
+) -> PublishTargetAnalysisJobResponse:
     service = ProductService()
-    return await service.analyze_publish_target(product_id, marketplace, current_user=current_user)
+    return service.start_publish_target_analysis(product_id, marketplace, payload=payload, current_user=current_user)
+
+
+@router.get(
+    "/products/{product_id}/marketplaces/{marketplace}/publish-target/jobs/{job_id}",
+    response_model=PublishTargetAnalysisJobResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_publish_target_analysis_job(
+    product_id: str,
+    marketplace: MarketplaceRequestLiteral,
+    job_id: str,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> PublishTargetAnalysisJobResponse:
+    service = ProductService()
+    job = service.get_publish_target_analysis_job(job_id, current_user=current_user)
+    if job is None or job.product_id != product_id or job.marketplace != marketplace:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Publish target analysis job not found.")
+    return job
 
 
 @router.post(

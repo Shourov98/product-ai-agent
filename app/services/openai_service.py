@@ -33,7 +33,14 @@ class OpenAIService:
         if not self.enabled or self.client is None:
             raise OpenAIServiceError("OpenAI is disabled.")
 
-        user_lines = [f"{key}: {value}" for key, value in user_payload.items()]
+        import json
+
+        def _format_value(value: Any) -> str:
+            if isinstance(value, (dict, list, tuple)):
+                return json.dumps(value, ensure_ascii=False)
+            return str(value)
+
+        user_lines = [f"{key}: {_format_value(value)}" for key, value in user_payload.items()]
 
         try:
             response = await self.client.responses.create(
@@ -59,8 +66,6 @@ class OpenAIService:
             raise OpenAIServiceError("OpenAI returned an empty structured response.")
 
         try:
-            import json
-
             parsed = json.loads(output_text)
         except Exception as exc:
             raise OpenAIServiceError("OpenAI returned invalid JSON.") from exc

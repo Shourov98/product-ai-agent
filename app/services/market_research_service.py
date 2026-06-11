@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from statistics import mean
 
 from app.config import Settings
@@ -22,14 +23,6 @@ class MarketResearchService:
         "shopify": ("premium storefront", "direct to consumer", "brand led"),
     }
 
-    _MARKETPLACE_PRICE_MULTIPLIERS = {
-        "amazon": (0.94, 1.0, 1.08),
-        "ebay": (0.9, 0.97, 1.04),
-        "etsy": (0.96, 1.05, 1.16),
-        "tiktok": (0.88, 0.95, 1.02),
-        "shopify": (0.98, 1.08, 1.18),
-    }
-
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.ebay_live = EbayMarketResearchService(
@@ -43,11 +36,13 @@ class MarketResearchService:
         )
 
     async def build_research_bundle(self, core_data: CoreProductResponse) -> MarketResearchBundleResponse:
-        amazon = await self._build_amazon_marketplace_research(core_data)
-        ebay = await self._build_ebay_marketplace_research(core_data)
-        etsy = await self._build_search_augmented_marketplace_research("etsy", core_data)
-        tiktok = await self._build_search_augmented_marketplace_research("tiktok", core_data)
-        shopify = await self._build_search_augmented_marketplace_research("shopify", core_data)
+        amazon, ebay, etsy, tiktok, shopify = await asyncio.gather(
+            self._safe_build_marketplace_research("amazon", core_data),
+            self._safe_build_marketplace_research("ebay", core_data),
+            self._safe_build_marketplace_research("etsy", core_data),
+            self._safe_build_marketplace_research("tiktok", core_data),
+            self._safe_build_marketplace_research("shopify", core_data),
+        )
         return MarketResearchBundleResponse(
             amazon=amazon,
             ebay=ebay,
@@ -55,6 +50,20 @@ class MarketResearchService:
             tiktok=tiktok,
             shopify=shopify,
         )
+
+    async def _safe_build_marketplace_research(
+        self,
+        marketplace: str,
+        core_data: CoreProductResponse,
+    ) -> MarketplaceResearchResponse:
+        try:
+            if marketplace == "amazon":
+                return await self._build_amazon_marketplace_research(core_data)
+            if marketplace == "ebay":
+                return await self._build_ebay_marketplace_research(core_data)
+            return await self._build_search_augmented_marketplace_research(marketplace, core_data)
+        except Exception:
+            return self._build_marketplace_research(marketplace, core_data)
 
     async def _build_amazon_marketplace_research(self, core_data: CoreProductResponse) -> MarketplaceResearchResponse:
         return self._build_marketplace_research("amazon", core_data)
@@ -89,14 +98,14 @@ class MarketResearchService:
     ) -> MarketplaceResearchResponse:
         search_queries = self._build_queries(marketplace, core_data)
         keyword_signals = self._build_keyword_signals(marketplace, core_data)
-        base_price = self._estimate_base_price(core_data)
-        price_points = [round(base_price * multiplier, 2) for multiplier in self._MARKETPLACE_PRICE_MULTIPLIERS[marketplace]]
+        base_price, spread = self._estimate_price_profile(core_data, marketplace, keyword_signals)
+        price_points = self._build_price_points(base_price, spread, marketplace)
         listings = self._build_similar_listings(marketplace, core_data, price_points)
         numeric_prices = [listing.price for listing in listings if listing.price is not None]
 
         return MarketplaceResearchResponse(
             marketplace=marketplace,
-            source_mode="heuristic",
+            source_mode="heuristic_market_research",
             search_queries=search_queries,
             keyword_signals=keyword_signals,
             price_min=min(numeric_prices) if numeric_prices else None,
@@ -214,7 +223,11 @@ class MarketResearchService:
         return observations
 
     @staticmethod
-    def _estimate_base_price(core_data: CoreProductResponse) -> float:
+    def _estimate_price_profile(
+        core_data: CoreProductResponse,
+        marketplace: str,
+        keyword_signals: list[str],
+    ) -> tuple[float, float]:
         identity = " ".join(
             [
                 core_data.normalized_title,
@@ -227,15 +240,15 @@ class MarketResearchService:
         ).lower()
 
         if any(keyword in identity for keyword in ("ps5", "playstation 5", "playstation5", "sony playstation 5", "sony ps5", "ps 5")):
-            return 499.99
+            return 499.99, 0.16
         if any(keyword in identity for keyword in ("xbox series x", "xbox series s", "xbox", "gaming console", "video game console", "game console", "console")):
             if "series s" in identity:
-                return 299.99
-            return 399.99 if "console" in identity and "gaming" not in identity else 499.99
+                return 299.99, 0.17
+            return (399.99 if "console" in identity and "gaming" not in identity else 499.99), 0.16
         if any(keyword in identity for keyword in ("nintendo switch", "switch oled", "switch lite")):
             if "lite" in identity:
-                return 199.99
-            return 299.99
+                return 199.99, 0.18
+            return 299.99, 0.18
 
         baseline = 14.99
         category = core_data.category.lower()
@@ -258,4 +271,29 @@ class MarketResearchService:
         if "brand" in attributes:
             baseline += 3.0
 
-        return baseline
+        signal_boost = min(0.22, 0.01 * len(keyword_signals))
+        spread = max(0.12, min(0.34, 0.14 + (len(core_data.features) * 0.015) + (len(attributes) * 0.01) + signal_boost))
+        marketplace_bias = {
+            "amazon": 1.0,
+            "ebay": 0.98,
+            "etsy": 1.04,
+            "tiktok": 0.96,
+            "shopify": 1.06,
+        }[marketplace]
+        return round(baseline * marketplace_bias, 2), spread
+
+    @staticmethod
+    def _build_price_points(base_price: float, spread: float, marketplace: str) -> list[float]:
+        market_bias = {
+            "amazon": 1.0,
+            "ebay": 0.99,
+            "etsy": 1.02,
+            "tiktok": 0.97,
+            "shopify": 1.05,
+        }[marketplace]
+        center = max(0.01, base_price * market_bias)
+        lower = max(0.01, center * (1 - spread * 1.25))
+        lower_mid = max(0.01, center * (1 - spread * 0.45))
+        upper_mid = max(lower_mid, center * (1 + spread * 0.35))
+        upper = max(upper_mid, center * (1 + spread * 1.15))
+        return [round(lower, 2), round(lower_mid, 2), round(center, 2), round(upper_mid, 2), round(upper, 2)]

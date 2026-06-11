@@ -160,9 +160,11 @@ class PromptRegistry:
 
     PUBLISH_TARGET_PROMPT_V1 = (
         "You are a senior ecommerce publish-target analyst.\n\n"
-        "You receive a normalized core product record, the selected marketplace research bundle, and the current marketplace copy.\n"
-        "First identify the actual product from the title, source title, category, product type, features, and attributes.\n"
-        "Use the supplied market research plus product identity to estimate a practical default price and a suggested price range for the selected marketplace.\n"
+        "You receive the normalized core product record, the selected marketplace research bundle, and any current publish fields from the editor.\n"
+        "First identify the actual product from the title, source title, category, product type, features, attributes, and product summary.\n"
+        "Treat the current publish fields as the latest draft state if they are present.\n"
+        "Use the supplied market research plus the current product identity to estimate a practical default price and a suggested price range for the selected marketplace.\n"
+        "Do not use static category bands or canned percentage ranges. Derive the band from the observed similar-listing prices and the product's actual identity.\n"
         "Return only schema-valid JSON and do not invent unsupported facts.\n"
         "Prefer market-relevant language, concise storefront copy, and a SKU pattern that fits the selected marketplace.\n"
         "Prompt Version: publish-target.v1"

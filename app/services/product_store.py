@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 from math import ceil
@@ -67,6 +68,17 @@ class ProductStore:
                 total_pages=total_pages,
             ),
         )
+
+    def delete(self, product_id: str, *, user_id: str | None = None) -> bool:
+        path = self._find_record_path(product_id)
+        if path is None:
+            return False
+        if path.parent.exists():
+            shutil.rmtree(path.parent)
+        legacy_dir = (self.base_dir / "products" / product_id).resolve()
+        if legacy_dir.exists():
+            shutil.rmtree(legacy_dir)
+        return True
 
     def get_product_dir(self, product_id: str) -> Path:
         record_path = self._find_record_path(product_id)
