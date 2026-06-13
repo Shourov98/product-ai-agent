@@ -44,6 +44,8 @@ async def test_generate_endpoint_returns_structured_response() -> None:
     assert "tiktok" in body
     assert "ebay" in body
     assert "shopify" in body
+    assert body["shopify"]["category"]
+    assert body["shopify"]["metafields"]["age_group"]
     assert "images" in body
     assert "source" in body["images"]
     assert "amazon" in body["images"]
@@ -148,6 +150,8 @@ async def test_text_only_generation_creates_pending_marketplace_images(monkeypat
     assert body["product"]["images"]["source"]["absolute_path"]
     assert body["product"]["images"]["amazon"]["absolute_path"] == ""
     assert body["product"]["images"]["amazon"]["generation_mode"] == "pending_marketplace_generation"
+    assert body["product"]["shopify"]["category"]
+    assert body["product"]["shopify"]["metafields"]["age_group"]
 
 
 @pytest.mark.anyio

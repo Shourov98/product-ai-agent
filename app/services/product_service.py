@@ -360,6 +360,15 @@ class ProductService:
             product_type=product_type or "",
             seo_title=normalized_title[:70],
             seo_description=(description or "")[:180],
+            category=category or "",
+            metafields={
+                key: value
+                for key, value in {
+                    "color": color.title() if color else "",
+                    "footwear_material": material.title() if material else "",
+                }.items()
+                if value
+            },
         )
         return ProductPipelineResponse(
             core=core,
