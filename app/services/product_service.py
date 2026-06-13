@@ -880,39 +880,34 @@ class ProductService:
 
         suggested = self._suggested_price_for_marketplace(core, marketplace, research)
         recommended = self._default_price_from_band(suggested, research, core, marketplace)
-        if suggested is not None and recommended is not None:
-            return MarketplacePricingSnapshotResponse(
-                marketplace=marketplace,
-                source_mode="estimated_range",
-                search_queries=research.search_queries,
-                comparable_count=len(research.similar_listings),
-                recommended_price=round(recommended, 2),
-                currency=suggested.currency,
-                suggested_price_range=suggested.model_copy(update={"source": "estimated_range"}),
-                market_signal=self._market_signal_for_marketplace(marketplace, research),
-                analysis_summary=self._analysis_summary_for_marketplace(
-                    self._product_identity_label(core),
-                    marketplace,
-                    research,
-                    recommended,
-                    core.product_summary,
-                    pricing_mode="estimated_range",
-                ),
-                similar_listings=research.similar_listings[:3],
+        if suggested is None or recommended is None:
+            base_price = self._estimate_base_price(core)
+            spread = 0.16 if base_price >= 100 else 0.22
+            suggested = SuggestedPriceRangeResponse(
+                minimum=round(max(0.01, base_price * (1 - spread)), 2),
+                maximum=round(base_price * (1 + spread), 2),
+                recommended=round(base_price, 2),
+                currency="USD",
+                source="estimated_range",
             )
+            recommended = round(base_price, 2)
 
         return MarketplacePricingSnapshotResponse(
             marketplace=marketplace,
-            source_mode="insufficient_data",
+            source_mode="estimated_range",
             search_queries=research.search_queries,
             comparable_count=len(research.similar_listings),
-            recommended_price=None,
-            currency="USD",
-            suggested_price_range=None,
-            market_signal=self._insufficient_pricing_signal(marketplace, research),
-            analysis_summary=(
-                f"{self._product_identity_label(core)} on {marketplace.title()} does not have enough reliable live pricing data yet. "
-                "Refresh again after stronger marketplace matches are available."
+            recommended_price=round(recommended, 2),
+            currency=suggested.currency,
+            suggested_price_range=suggested.model_copy(update={"source": "estimated_range"}),
+            market_signal=self._market_signal_for_marketplace(marketplace, research),
+            analysis_summary=self._analysis_summary_for_marketplace(
+                self._product_identity_label(core),
+                marketplace,
+                research,
+                recommended,
+                core.product_summary,
+                pricing_mode="estimated_range",
             ),
             similar_listings=research.similar_listings[:3],
         )
