@@ -903,6 +903,7 @@ class ProductService:
                     "publish_fields": publish_fields,
                     "product": record.product.model_dump(exclude={"images", "intelligence"}),
                     "research": selected_research.model_dump(),
+                    "baseline_analysis": fallback.model_dump(),
                 },
                 schema_name="publish_target_analysis",
                 schema=self._PUBLISH_TARGET_SCHEMA,
@@ -1053,17 +1054,91 @@ class ProductService:
         else:
             range_payload = None
 
+        normalized_range = self._normalize_suggested_price_range(range_payload, fallback.suggested_price_range)
+        normalized_default_price = self._normalize_default_price(
+            data.get("default_price"),
+            normalized_range,
+            fallback.default_price,
+        )
+
         payload: dict[str, object] = {
             "marketplace": str(data.get("marketplace", fallback.marketplace)),
             "vendor": str(data.get("vendor", fallback.vendor)),
             "default_sku": str(data.get("default_sku", fallback.default_sku)),
-            "default_price": str(data.get("default_price", fallback.default_price)),
+            "default_price": f"{normalized_default_price:.2f}",
             "publish_description": str(data.get("publish_description", fallback.publish_description)),
-            "suggested_price_range": range_payload if range_payload is not None else fallback.suggested_price_range,
+            "suggested_price_range": normalized_range,
             "market_signal": str(data.get("market_signal", fallback.market_signal)),
             "analysis_summary": str(data.get("analysis_summary", fallback.analysis_summary)),
         }
         return PublishTargetAnalysisResponse.model_validate(payload)
+
+    @classmethod
+    def _normalize_suggested_price_range(
+        cls,
+        value: dict[str, object] | None,
+        fallback: SuggestedPriceRangeResponse | None,
+    ) -> SuggestedPriceRangeResponse | None:
+        if fallback is None and not isinstance(value, dict):
+            return None
+
+        fallback_minimum = fallback.minimum if fallback is not None else 1.0
+        fallback_maximum = fallback.maximum if fallback is not None else max(fallback_minimum, 10.0)
+        fallback_recommended = fallback.recommended if fallback is not None else fallback_minimum
+        fallback_currency = fallback.currency if fallback is not None else "USD"
+        fallback_source = fallback.source if fallback is not None else "market_research"
+
+        if not isinstance(value, dict):
+            return fallback
+
+        minimum = cls._parse_price(value.get("minimum")) or fallback_minimum
+        maximum = cls._parse_price(value.get("maximum")) or fallback_maximum
+        recommended = cls._parse_price(value.get("recommended")) or fallback_recommended
+
+        if maximum < minimum:
+            minimum, maximum = maximum, minimum
+
+        if maximum <= 0:
+            maximum = fallback_maximum
+        if minimum <= 0:
+            minimum = min(fallback_minimum, maximum)
+
+        if maximum <= minimum:
+            spread = max(fallback_maximum - fallback_minimum, minimum * 0.08, 1.0)
+            maximum = round(minimum + spread, 2)
+
+        recommended = min(max(recommended, minimum), maximum)
+
+        return SuggestedPriceRangeResponse(
+            minimum=round(minimum, 2),
+            maximum=round(maximum, 2),
+            recommended=round(recommended, 2),
+            currency=str(value.get("currency", fallback_currency) or fallback_currency),
+            source=str(value.get("source", fallback_source) or fallback_source),
+        )
+
+    @classmethod
+    def _normalize_default_price(
+        cls,
+        value: object,
+        suggested_range: SuggestedPriceRangeResponse | None,
+        fallback_default_price: str,
+    ) -> float:
+        fallback_price = cls._parse_price(fallback_default_price) or 1.0
+        parsed = cls._parse_price(value) or fallback_price
+
+        if suggested_range is None:
+            return round(parsed, 2)
+
+        minimum = suggested_range.minimum
+        maximum = suggested_range.maximum
+        recommended = suggested_range.recommended
+
+        if parsed < minimum:
+            return round(max(minimum, recommended), 2)
+        if parsed > maximum:
+            return round(min(maximum, recommended), 2)
+        return round(parsed, 2)
 
     @staticmethod
     def _default_price_from_band(
