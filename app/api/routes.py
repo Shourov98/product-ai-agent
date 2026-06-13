@@ -26,6 +26,29 @@ from app.services.product_service import ProductService
 router = APIRouter()
 
 
+async def _read_image_payload(image: UploadFile) -> ImagePayload:
+    settings = get_settings()
+    content = await image.read()
+
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Image upload is empty.",
+        )
+
+    if len(content) > settings.max_upload_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Image exceeds configured upload limit.",
+        )
+
+    return ImagePayload(
+        filename=image.filename or "upload.bin",
+        content_type=image.content_type or "application/octet-stream",
+        data=content,
+    )
+
+
 @router.get("/health")
 async def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
@@ -40,63 +63,40 @@ async def generate_product_listing(
     title: str = Form(...),
     image: UploadFile = File(...),
 ) -> ProductPipelineResponse:
-    settings = get_settings()
-    content = await image.read()
-
-    if not content:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Image upload is empty.",
-        )
-
-    if len(content) > settings.max_upload_size_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Image exceeds configured upload limit.",
-        )
-
-    payload = ImagePayload(
-        filename=image.filename or "upload.bin",
-        content_type=image.content_type or "application/octet-stream",
-        data=content,
-    )
-
+    payload = await _read_image_payload(image)
     pipeline = ProductPipeline()
     return await pipeline.run(payload, title)
 
 
 @router.post(
-    "/products/generate",
+    "/products/generate/text",
     response_model=ProductRecordResponse,
     status_code=status.HTTP_200_OK,
 )
-async def generate_and_create_product(
+async def generate_text_only_product(
     title: str = Form(...),
     image: UploadFile = File(...),
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
 ) -> ProductRecordResponse:
-    settings = get_settings()
-    content = await image.read()
-
-    if not content:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Image upload is empty.",
-        )
-
-    if len(content) > settings.max_upload_size_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Image exceeds configured upload limit.",
-        )
-
-    payload = ImagePayload(
-        filename=image.filename or "upload.bin",
-        content_type=image.content_type or "application/octet-stream",
-        data=content,
-    )
+    payload = await _read_image_payload(image)
     service = ProductService()
-    return await service.generate_and_store(payload, title, current_user=current_user)
+    return await service.generate_text_only(payload, title, current_user=current_user)
+
+
+@router.post(
+    "/products/generate/{marketplace}",
+    response_model=ProductRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def generate_single_marketplace_product(
+    marketplace: MarketplaceRequestLiteral,
+    title: str = Form(...),
+    image: UploadFile = File(...),
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ProductRecordResponse:
+    payload = await _read_image_payload(image)
+    service = ProductService()
+    return await service.generate_marketplace_draft(payload, title, marketplace, current_user=current_user)
 
 
 @router.post(
@@ -358,23 +358,10 @@ async def upload_product_source_image(
     image: UploadFile = File(...),
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
 ) -> ProductRecordResponse:
-    settings = get_settings()
-    content = await image.read()
-    if not content:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image upload is empty.")
-    if len(content) > settings.max_upload_size_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Image exceeds configured upload limit.",
-        )
     service = ProductService()
     return await service.upload_source_image(
         product_id,
-        ImagePayload(
-            filename=image.filename or "upload.bin",
-            content_type=image.content_type or "application/octet-stream",
-            data=content,
-        ),
+        await _read_image_payload(image),
         current_user=current_user,
     )
 
@@ -468,6 +455,20 @@ async def add_color_variant(
 ) -> ProductRecordResponse:
     service = ProductService()
     return service.add_color_variant(product_id, marketplace, payload, current_user=current_user)
+
+
+@router.post(
+    "/products/{product_id}/marketplaces/{marketplace}/generate",
+    response_model=ProductRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def generate_marketplace_section(
+    product_id: str,
+    marketplace: MarketplaceRequestLiteral,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ProductRecordResponse:
+    service = ProductService()
+    return await service.regenerate_marketplace(product_id, marketplace, current_user=current_user)
 
 
 @router.post(

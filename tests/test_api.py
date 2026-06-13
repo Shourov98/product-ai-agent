@@ -60,7 +60,7 @@ async def test_product_crud_variant_and_regeneration_flow(monkeypatch, tmp_path)
         base_url="http://testserver",
     ) as client:
         create_response = await client.post(
-            "/api/products/generate",
+            "/api/products/generate/text",
             data={"title": "Pro Runner Sneaker"},
             files={
                 "image": (
@@ -118,4 +118,95 @@ async def test_product_crud_variant_and_regeneration_flow(monkeypatch, tmp_path)
         list_response = await client.get("/api/products")
         assert list_response.status_code == 200
         listed = list_response.json()
-        assert any(item["id"] == product_id for item in listed)
+        assert any(item["id"] == product_id for item in listed["items"])
+
+
+@pytest.mark.anyio
+async def test_text_only_generation_creates_pending_marketplace_images(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("PRODUCT_STORE_DIR", str(tmp_path / "products"))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            "/api/products/generate/text",
+            data={"title": "Pro Runner Sneaker"},
+            files={
+                "image": (
+                    "black-mesh-sneaker.jpg",
+                    b"\x10\x18\x20\x28" * 32,
+                    "image/jpeg",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["product"]["core"]["normalized_title"]
+    assert body["product"]["images"]["source"]["absolute_path"]
+    assert body["product"]["images"]["amazon"]["absolute_path"] == ""
+    assert body["product"]["images"]["amazon"]["generation_mode"] == "pending_marketplace_generation"
+
+
+@pytest.mark.anyio
+async def test_single_marketplace_generation_only_generates_requested_image(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("PRODUCT_STORE_DIR", str(tmp_path / "products"))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            "/api/products/generate/amazon",
+            data={"title": "Pro Runner Sneaker"},
+            files={
+                "image": (
+                    "black-mesh-sneaker.jpg",
+                    b"\x10\x18\x20\x28" * 32,
+                    "image/jpeg",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["product"]["images"]["amazon"]["absolute_path"]
+    assert body["product"]["images"]["ebay"]["absolute_path"] == ""
+    assert body["product"]["images"]["shopify"]["absolute_path"] == ""
+
+
+@pytest.mark.anyio
+async def test_marketplace_generate_endpoint_updates_requested_marketplace(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("PRODUCT_STORE_DIR", str(tmp_path / "products"))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        create_response = await client.post(
+            "/api/products/generate/text",
+            data={"title": "Pro Runner Sneaker"},
+            files={
+                "image": (
+                    "black-mesh-sneaker.jpg",
+                    b"\x10\x18\x20\x28" * 32,
+                    "image/jpeg",
+                )
+            },
+        )
+        assert create_response.status_code == 200
+        product_id = create_response.json()["id"]
+
+        generate_images_response = await client.post(
+            f"/api/products/{product_id}/marketplaces/amazon/generate",
+        )
+
+    assert generate_images_response.status_code == 200
+    body = generate_images_response.json()
+    assert body["product"]["images"]["amazon"]["absolute_path"]
+    assert body["product"]["amazon"]["title"]
+    assert body["product"]["images"]["ebay"]["absolute_path"] == ""

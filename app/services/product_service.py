@@ -177,20 +177,48 @@ class ProductService:
         cls._shared_shopify_agent = None
         cls._shared_optimization_agent = None
 
-    async def generate_and_store(
+    async def generate_text_only(
         self,
         image: ImagePayload,
         title: str,
         current_user: AuthenticatedUser | None = None,
     ) -> ProductRecordResponse:
-        result = await self.pipeline.run_with_context(image, title)
+        result = await self._build_generated_product(
+            image=image,
+            title=title,
+            image_marketplaces=[],
+        )
         record = ProductRecordResponse(
             id=self._new_id(),
             status="draft",
             created_at=self._timestamp(),
             updated_at=self._timestamp(),
-            run_id=result.run_dir.name,
-            product=result.response,
+            run_id=result["run_id"],
+            product=result["product"],
+            variants=MarketplaceVariantsResponse(),
+        )
+        self.store.save(record, user_id=current_user.user_id if current_user is not None else None)
+        return record
+
+    async def generate_marketplace_draft(
+        self,
+        image: ImagePayload,
+        title: str,
+        marketplace: MarketplaceLiteral,
+        current_user: AuthenticatedUser | None = None,
+    ) -> ProductRecordResponse:
+        result = await self._build_generated_product(
+            image=image,
+            title=title,
+            image_marketplaces=[marketplace],
+        )
+        record = ProductRecordResponse(
+            id=self._new_id(),
+            status="draft",
+            created_at=self._timestamp(),
+            updated_at=self._timestamp(),
+            run_id=result["run_id"],
+            product=result["product"],
             variants=MarketplaceVariantsResponse(),
         )
         self.store.save(record, user_id=current_user.user_id if current_user is not None else None)
@@ -545,33 +573,43 @@ class ProductService:
         marketplace: MarketplaceLiteral,
         current_user: AuthenticatedUser | None = None,
     ) -> ProductRecordResponse:
+        return await self.generate_product_images(
+            product_id,
+            marketplaces=[marketplace],
+            current_user=current_user,
+        )
+
+    async def generate_product_images(
+        self,
+        product_id: str,
+        *,
+        marketplaces: list[MarketplaceLiteral],
+        current_user: AuthenticatedUser | None = None,
+    ) -> ProductRecordResponse:
         record = self.get_product(product_id, current_user=current_user)
         source_image = self._load_source_image(record)
-
         core = record.product.core
         research = await self.pipeline.research.build_research_bundle(core)
         seo = await self.pipeline.seo.process(core, research)
-
         amazon = record.product.amazon
         ebay = record.product.ebay
         etsy = record.product.etsy
         tiktok = record.product.tiktok
         shopify = record.product.shopify
-
-        if marketplace == "amazon":
-            amazon = await self.amazon_agent.process(core, research=research.amazon, seo=seo)
-        elif marketplace == "ebay":
-            ebay = await self.ebay_agent.process(core, research=research.ebay, seo=seo)
-        elif marketplace == "etsy":
-            etsy = await self.etsy_agent.process(core, research=research.etsy, seo=seo)
-        elif marketplace == "tiktok":
-            tiktok = await self.tiktok_agent.process(core, research=research.tiktok, seo=seo)
-        else:
-            shopify = await self.shopify_agent.process(core, research=research.shopify, seo=seo)
+        text_content = await self._generate_marketplace_content(core=core, research=research, seo=seo)
+        if "amazon" in marketplaces:
+            amazon = text_content["amazon"]
+        if "ebay" in marketplaces:
+            ebay = text_content["ebay"]
+        if "etsy" in marketplaces:
+            etsy = text_content["etsy"]
+        if "tiktok" in marketplaces:
+            tiktok = text_content["tiktok"]
+        if "shopify" in marketplaces:
+            shopify = text_content["shopify"]
 
         product_dir = self.store.get_product_dir(record.id)
-        image_asset = await self.image_agent.regenerate_marketplace_asset(
-            marketplace=marketplace,
+        generated_images = await self._generate_marketplace_images(
             source=source_image,
             existing_images=record.product.images,
             core_data=core,
@@ -580,26 +618,35 @@ class ProductService:
             etsy_data=etsy,
             tiktok_data=tiktok,
             shopify_data=shopify,
+            marketplaces=marketplaces,
             run_dir=product_dir,
-            output_service=self.output_service,
         )
-        images = record.product.images.model_copy(update={marketplace: image_asset})
+        latest_record = self.get_product(product_id, current_user=current_user)
+        latest_product = latest_record.product
+        images = latest_product.images.model_copy(
+            update={marketplace: getattr(generated_images, marketplace) for marketplace in marketplaces}
+        )
+        merged_amazon = amazon if "amazon" in marketplaces else latest_product.amazon
+        merged_ebay = ebay if "ebay" in marketplaces else latest_product.ebay
+        merged_etsy = etsy if "etsy" in marketplaces else latest_product.etsy
+        merged_tiktok = tiktok if "tiktok" in marketplaces else latest_product.tiktok
+        merged_shopify = shopify if "shopify" in marketplaces else latest_product.shopify
         validation = self.pipeline.validation.validate_pipeline(
-            core=core,
-            amazon=amazon,
-            ebay=ebay,
-            etsy=etsy,
-            tiktok=tiktok,
-            shopify=shopify,
+            core=latest_product.core,
+            amazon=merged_amazon,
+            ebay=merged_ebay,
+            etsy=merged_etsy,
+            tiktok=merged_tiktok,
+            shopify=merged_shopify,
             images=images,
         )
         product = ProductPipelineResponse(
-            core=core,
-            amazon=amazon,
-            ebay=ebay,
-            etsy=etsy,
-            tiktok=tiktok,
-            shopify=shopify,
+            core=latest_product.core,
+            amazon=merged_amazon,
+            ebay=merged_ebay,
+            etsy=merged_etsy,
+            tiktok=merged_tiktok,
+            shopify=merged_shopify,
             images=images,
             intelligence={
                 "research": research,
@@ -607,9 +654,142 @@ class ProductService:
                 "validation": validation,
             },
         )
-        updated = record.model_copy(update={"product": product, "updated_at": self._timestamp()})
+        updated = latest_record.model_copy(update={"product": product, "updated_at": self._timestamp()})
         self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
+
+    async def _build_generated_product(
+        self,
+        *,
+        image: ImagePayload,
+        title: str,
+        image_marketplaces: list[MarketplaceLiteral],
+    ) -> dict[str, object]:
+        run_dir = self.output_service.create_run_dir()
+        vision_data = await self.pipeline.vision.process(image)
+        self.output_service.save_json(run_dir, "vision", vision_data.model_dump())
+        core_data = await self.pipeline.core.process(title, vision_data)
+        core_data = await self.pipeline.attribute_mapper.process(core_data, vision_data)
+        self.output_service.save_json(run_dir, "core", core_data.model_dump())
+        research = await self.pipeline.research.build_research_bundle(core_data)
+        self.output_service.save_json(run_dir, "research", research.model_dump())
+        seo = await self.pipeline.seo.process(core_data, research)
+        self.output_service.save_json(run_dir, "seo", seo.model_dump())
+
+        text_content = await self._generate_marketplace_content(core=core_data, research=research, seo=seo)
+        for marketplace, payload in text_content.items():
+            self.output_service.save_json(run_dir, marketplace, payload.model_dump())
+
+        source_asset = self.image_agent._save_source(image=image, run_dir=run_dir, output_service=self.output_service)
+        cutout_asset = await self.image_agent._build_cutout(
+            image=image,
+            core_data=core_data,
+            run_dir=run_dir,
+            output_service=self.output_service,
+        )
+        images = self._pending_generated_images(
+            source_asset=source_asset,
+            transparent_cutout=cutout_asset,
+        )
+        if image_marketplaces:
+            images = await self._generate_marketplace_images(
+                source=image,
+                existing_images=images,
+                core_data=core_data,
+                amazon_data=text_content["amazon"],
+                ebay_data=text_content["ebay"],
+                etsy_data=text_content["etsy"],
+                tiktok_data=text_content["tiktok"],
+                shopify_data=text_content["shopify"],
+                marketplaces=image_marketplaces,
+                run_dir=run_dir,
+            )
+        self.output_service.save_json(run_dir, "images", images.model_dump())
+        validation = self.pipeline.validation.validate_pipeline(
+            core=core_data,
+            amazon=text_content["amazon"],
+            ebay=text_content["ebay"],
+            etsy=text_content["etsy"],
+            tiktok=text_content["tiktok"],
+            shopify=text_content["shopify"],
+            images=images,
+        )
+        product = ProductPipelineResponse(
+            core=core_data,
+            amazon=text_content["amazon"],
+            ebay=text_content["ebay"],
+            etsy=text_content["etsy"],
+            tiktok=text_content["tiktok"],
+            shopify=text_content["shopify"],
+            images=images,
+            intelligence={
+                "research": research,
+                "seo": seo,
+                "validation": validation,
+            },
+        )
+        self.output_service.save_json(run_dir, "validation", validation.model_dump())
+        self.output_service.save_json(run_dir, "final", product.model_dump())
+        return {
+            "run_id": run_dir.name,
+            "product": product,
+        }
+
+    async def _generate_marketplace_content(
+        self,
+        *,
+        core: CoreProductResponse,
+        research: MarketResearchBundleResponse,
+        seo: SeoInsightsResponse,
+    ) -> dict[str, AmazonResponse | EbayResponse | EtsyResponse | TikTokResponse | ShopifyResponse]:
+        amazon, ebay, etsy, tiktok, shopify = await asyncio.gather(
+            self.amazon_agent.process(core, research=research.amazon, seo=seo),
+            self.ebay_agent.process(core, research=research.ebay, seo=seo),
+            self.etsy_agent.process(core, research=research.etsy, seo=seo),
+            self.tiktok_agent.process(core, research=research.tiktok, seo=seo),
+            self.shopify_agent.process(core, research=research.shopify, seo=seo),
+        )
+        return {
+            "amazon": amazon,
+            "ebay": ebay,
+            "etsy": etsy,
+            "tiktok": tiktok,
+            "shopify": shopify,
+        }
+
+    async def _generate_marketplace_images(
+        self,
+        *,
+        source: ImagePayload,
+        existing_images: GeneratedImagesResponse,
+        core_data: CoreProductResponse,
+        amazon_data: AmazonResponse,
+        ebay_data: EbayResponse,
+        etsy_data: EtsyResponse,
+        tiktok_data: TikTokResponse,
+        shopify_data: ShopifyResponse,
+        marketplaces: list[MarketplaceLiteral],
+        run_dir: Path,
+    ) -> GeneratedImagesResponse:
+        async def generate_one(marketplace: MarketplaceLiteral) -> tuple[MarketplaceLiteral, ImageVariantResponse]:
+            asset = await self.image_agent.regenerate_marketplace_asset(
+                marketplace=marketplace,
+                source=source,
+                existing_images=existing_images,
+                core_data=core_data,
+                amazon_data=amazon_data,
+                ebay_data=ebay_data,
+                etsy_data=etsy_data,
+                tiktok_data=tiktok_data,
+                shopify_data=shopify_data,
+                run_dir=run_dir,
+                output_service=self.output_service,
+            )
+            return marketplace, asset
+
+        unique_marketplaces = list(dict.fromkeys(marketplaces))
+        generated = await asyncio.gather(*(generate_one(marketplace) for marketplace in unique_marketplaces))
+        return existing_images.model_copy(update={marketplace: asset for marketplace, asset in generated})
 
     def start_publish_target_analysis(
         self,
