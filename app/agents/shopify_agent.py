@@ -12,7 +12,7 @@ class ShopifyAgent:
     _SCHEMA = {
         "type": "object",
         "additionalProperties": False,
-        "required": ["title", "body_html", "tags", "product_type", "seo_title", "seo_description"],
+        "required": ["title", "body_html", "tags", "product_type", "seo_title", "seo_description", "category", "metafields"],
         "properties": {
             "title": {"type": "string"},
             "body_html": {"type": "string"},
@@ -20,6 +20,8 @@ class ShopifyAgent:
             "product_type": {"type": "string"},
             "seo_title": {"type": "string"},
             "seo_description": {"type": "string"},
+            "category": {"type": "string"},
+            "metafields": {"type": "object", "additionalProperties": {"type": "string"}},
         },
     }
 
@@ -45,6 +47,8 @@ class ShopifyAgent:
             product_type=core_data.product_type.title(),
             seo_title=self._build_seo_title(core_data, seo),
             seo_description=self._build_seo_description(core_data),
+            category=self._build_category(core_data),
+            metafields=self._build_metafields(core_data),
         )
 
         if self.openai_service is not None:
@@ -68,7 +72,7 @@ class ShopifyAgent:
 
         prompt = (
             "You are a senior Shopify product copy agent. Return only valid JSON with keys "
-            "title, body_html, tags, product_type, seo_title, seo_description.\n"
+            "title, body_html, tags, product_type, seo_title, seo_description, category, metafields.\n"
             "Write polished storefront copy and avoid internal metadata.\n"
             f"Core product: {core_data.model_dump()}\n"
         )
@@ -96,6 +100,8 @@ class ShopifyAgent:
             product_type=str(data.get("product_type", fallback.product_type)),
             seo_title=str(data.get("seo_title", fallback.seo_title))[:70],
             seo_description=str(data.get("seo_description", fallback.seo_description))[:180],
+            category=str(data.get("category", fallback.category))[:200],
+            metafields=self._coerce_metafields(data.get("metafields"), fallback.metafields),
             audit=audit_meta,
         )
 
@@ -147,9 +153,89 @@ class ShopifyAgent:
         return f"{core_data.product_summary} Explore features, materials, and product details."[:180]
 
     @staticmethod
+    def _build_category(core_data: CoreProductResponse) -> str:
+        category = core_data.category.strip()
+        product_type = core_data.product_type.strip().title()
+        if not category:
+            return product_type
+        if ">" in category:
+            return category
+        if product_type and product_type.lower() not in category.lower():
+            return f"{category} > {product_type}"
+        return category
+
+    @staticmethod
+    def _build_metafields(core_data: CoreProductResponse) -> dict[str, str]:
+        attributes = {str(key).strip().lower(): str(value).strip() for key, value in core_data.attributes.items() if str(value).strip()}
+        product_identity = f"{core_data.category} {core_data.product_type} {core_data.normalized_title}".lower()
+        metafields: dict[str, str] = {}
+
+        color = attributes.get("color")
+        if color:
+            metafields["color"] = color.title()
+
+        age_group = attributes.get("age_group") or attributes.get("age") or attributes.get("target_age_group")
+        if age_group:
+            metafields["age_group"] = age_group.title()
+        elif any(token in product_identity for token in ("kids", "children", "toddler", "infant")):
+            metafields["age_group"] = "Kids"
+        else:
+            metafields["age_group"] = "Adults"
+
+        closure = attributes.get("closure_type") or attributes.get("closure")
+        if closure:
+            metafields["closure_type"] = closure.title()
+        elif "shoe" in product_identity or "sneaker" in product_identity:
+            metafields["closure_type"] = "Lace-up"
+
+        heel_height = attributes.get("heel_height_type") or attributes.get("heel_height")
+        if heel_height:
+            metafields["heel_height_type"] = heel_height.title()
+        elif "heel" in product_identity:
+            metafields["heel_height_type"] = "Mid Heel"
+        elif "shoe" in product_identity or "sneaker" in product_identity:
+            metafields["heel_height_type"] = "Flat"
+
+        occasion = attributes.get("occasion_style") or attributes.get("occasion")
+        if occasion:
+            metafields["occasion_style"] = occasion.title()
+        elif "athletic" in product_identity or "running" in product_identity or "sneaker" in product_identity:
+            metafields["occasion_style"] = "Athletic"
+
+        gender = attributes.get("target_gender") or attributes.get("gender")
+        if gender:
+            metafields["target_gender"] = gender.title()
+        else:
+            metafields["target_gender"] = "Unisex"
+
+        toe_style = attributes.get("toe_style")
+        if toe_style:
+            metafields["toe_style"] = toe_style.title()
+        elif "shoe" in product_identity or "sneaker" in product_identity:
+            metafields["toe_style"] = "Round"
+
+        material = attributes.get("footwear_material") or attributes.get("material")
+        if material:
+            metafields["footwear_material"] = material.title()
+
+        return metafields
+
+    @staticmethod
     def _coerce_list(value: object, fallback: list[str]) -> list[str]:
         if isinstance(value, list) and all(isinstance(item, str) for item in value):
             coerced = unique_strings(value, limit=12)
             if coerced:
                 return coerced
+        return fallback
+
+    @staticmethod
+    def _coerce_metafields(value: object, fallback: dict[str, str]) -> dict[str, str]:
+        if isinstance(value, dict):
+            cleaned = {
+                str(key).strip(): str(item).strip()
+                for key, item in value.items()
+                if str(key).strip() and str(item).strip()
+            }
+            if cleaned:
+                return cleaned
         return fallback

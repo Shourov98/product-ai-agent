@@ -101,7 +101,7 @@ class ProductOptimizationAgent:
             "shopify": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["title", "body_html", "tags", "product_type", "seo_title", "seo_description"],
+                "required": ["title", "body_html", "tags", "product_type", "seo_title", "seo_description", "category", "metafields"],
                 "properties": {
                     "title": {"type": "string"},
                     "body_html": {"type": "string"},
@@ -109,6 +109,8 @@ class ProductOptimizationAgent:
                     "product_type": {"type": "string"},
                     "seo_title": {"type": "string"},
                     "seo_description": {"type": "string"},
+                    "category": {"type": "string"},
+                    "metafields": {"type": "object", "additionalProperties": {"type": "string"}},
                     "audit": {"type": "object", "nullable": True},
                 },
             },
@@ -302,7 +304,19 @@ class ProductOptimizationAgent:
         seo_title_terms = unique_strings([core.normalized_title, *seo.primary_keywords[:2]], limit=2)
         seo_title = " | ".join(term.title() if term != core.normalized_title else term for term in seo_title_terms)[:70]
         seo_description = sentence_case_summary([shopify.seo_description.rstrip("."), "Optimized for storefront clarity and conversion"])[:180]
-        return shopify.model_copy(update={"tags": tags, "seo_title": seo_title, "seo_description": seo_description})
+        metafields = dict(shopify.metafields)
+        metafields.setdefault("color", core.attributes.get("color", "").title() if core.attributes.get("color") else "")
+        metafields.setdefault("footwear_material", core.attributes.get("material", "").title() if core.attributes.get("material") else "")
+        metafields = {key: value for key, value in metafields.items() if value}
+        return shopify.model_copy(
+            update={
+                "tags": tags,
+                "seo_title": seo_title,
+                "seo_description": seo_description,
+                "category": shopify.category or core.category,
+                "metafields": metafields,
+            }
+        )
 
     @staticmethod
     def coerce_core(value: object, fallback: CoreProductResponse) -> CoreProductResponse:

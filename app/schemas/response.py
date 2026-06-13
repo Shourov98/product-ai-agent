@@ -107,6 +107,8 @@ class ShopifyResponse(BaseModel):
     product_type: str
     seo_title: str
     seo_description: str
+    category: str = ""
+    metafields: dict[str, str] = Field(default_factory=dict)
     audit: AgentAuditMetadata | None = None
 
 

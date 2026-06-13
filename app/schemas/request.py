@@ -52,6 +52,8 @@ class ShopifyUpdateRequest(BaseModel):
     product_type: str | None = Field(default=None, min_length=1, max_length=120)
     seo_title: str | None = Field(default=None, min_length=1, max_length=70)
     seo_description: str | None = Field(default=None, min_length=1, max_length=180)
+    category: str | None = Field(default=None, min_length=1, max_length=200)
+    metafields: dict[str, str] | None = None
 
 
 class EtsyUpdateRequest(BaseModel):
