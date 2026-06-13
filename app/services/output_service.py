@@ -7,18 +7,18 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from app.services.cloudinary_service import CloudinaryService
+from app.services.s3_service import S3Service
 
 class OutputService:
     def __init__(
         self,
         base_dir: str,
         *,
-        cloudinary_service: CloudinaryService | None = None,
+        s3_service: S3Service | None = None,
         local_output_enabled: bool = False,
     ) -> None:
         self.base_dir = Path(base_dir).resolve()
-        self.cloudinary_service = cloudinary_service
+        self.s3_service = s3_service
         self.local_output_enabled = local_output_enabled
         if self.local_output_enabled:
             self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -47,14 +47,14 @@ class OutputService:
         *,
         mime_type: str = "application/octet-stream",
     ) -> str:
-        if self.cloudinary_service is not None and self.cloudinary_service.enabled:
-            public_id = f"{run_dir.name}/{Path(relative_path).with_suffix('').as_posix()}"
-            asset = self.cloudinary_service.upload_bytes(
+        if self.s3_service is not None and self.s3_service.enabled:
+            object_key = f"{run_dir.name}/{Path(relative_path).as_posix()}"
+            asset = self.s3_service.upload_bytes(
                 payload,
-                public_id=public_id,
+                key=object_key,
                 mime_type=mime_type,
             )
-            return asset.secure_url
+            return asset.url
 
         path = (run_dir.resolve() / relative_path).resolve()
         path.parent.mkdir(parents=True, exist_ok=True)

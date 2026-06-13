@@ -10,14 +10,13 @@ from app.schemas.request import (
     MarketplaceRequestLiteral,
     ProductOptimizationRequest,
     ProductUpdateRequest,
-    PublishTargetAnalysisRequest,
     VariantCreateRequest,
 )
 from app.schemas.response import (
     PaginatedProductListResponse,
     ProductPipelineResponse,
+    ProductPricingSnapshotResponse,
     ProductRecordResponse,
-    PublishTargetAnalysisJobResponse,
 )
 from app.services.image_service import ImagePayload
 from app.services.import_service import ImportService
@@ -394,37 +393,17 @@ async def optimize_marketplace(
     return await service.optimize_marketplace(product_id, marketplace, current_user=current_user)
 
 
-@router.post(
-    "/products/{product_id}/marketplaces/{marketplace}/publish-target/analyze",
-    response_model=PublishTargetAnalysisJobResponse,
-    status_code=status.HTTP_200_OK,
-)
-async def analyze_publish_target(
-    product_id: str,
-    marketplace: MarketplaceRequestLiteral,
-    payload: PublishTargetAnalysisRequest,
-    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
-) -> PublishTargetAnalysisJobResponse:
-    service = ProductService()
-    return service.start_publish_target_analysis(product_id, marketplace, payload=payload, current_user=current_user)
-
-
 @router.get(
-    "/products/{product_id}/marketplaces/{marketplace}/publish-target/jobs/{job_id}",
-    response_model=PublishTargetAnalysisJobResponse,
+    "/products/{product_id}/pricing/snapshot",
+    response_model=ProductPricingSnapshotResponse,
     status_code=status.HTTP_200_OK,
 )
-async def get_publish_target_analysis_job(
+async def get_product_pricing_snapshot(
     product_id: str,
-    marketplace: MarketplaceRequestLiteral,
-    job_id: str,
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
-) -> PublishTargetAnalysisJobResponse:
+) -> ProductPricingSnapshotResponse:
     service = ProductService()
-    job = service.get_publish_target_analysis_job(job_id, current_user=current_user)
-    if job is None or job.product_id != product_id or job.marketplace != marketplace:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Publish target analysis job not found.")
-    return job
+    return await service.get_product_pricing_snapshot(product_id, current_user=current_user)
 
 
 @router.post(

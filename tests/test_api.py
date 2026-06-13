@@ -214,3 +214,44 @@ async def test_marketplace_generate_endpoint_updates_requested_marketplace(monke
     assert body["product"]["images"]["amazon"]["absolute_path"]
     assert body["product"]["amazon"]["title"]
     assert body["product"]["images"]["ebay"]["absolute_path"] == ""
+
+
+@pytest.mark.anyio
+async def test_pricing_snapshot_endpoint_returns_market_ranges(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("PRODUCT_STORE_DIR", str(tmp_path / "products"))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        create_response = await client.post(
+            "/api/products/generate/text",
+            data={"title": "Pro Runner Sneaker"},
+            files={
+                "image": (
+                    "black-mesh-sneaker.jpg",
+                    b"\x10\x18\x20\x28" * 32,
+                    "image/jpeg",
+                )
+            },
+        )
+        assert create_response.status_code == 200
+        product_id = create_response.json()["id"]
+
+        pricing_response = await client.get(f"/api/products/{product_id}/pricing/snapshot")
+
+    assert pricing_response.status_code == 200
+    body = pricing_response.json()
+    assert body["product_id"] == product_id
+    assert len(body["markets"]) == 5
+    assert {entry["marketplace"] for entry in body["markets"]} == {"amazon", "ebay", "etsy", "tiktok", "shopify"}
+    for entry in body["markets"]:
+        assert entry["source_mode"] in {"live_api", "cross_market_live_reference", "gemini_search", "ai_estimate", "estimated_range", "insufficient_data"}
+        if entry["suggested_price_range"] is None:
+            assert entry["source_mode"] == "insufficient_data"
+            assert entry["recommended_price"] is None
+            continue
+        assert entry["recommended_price"] is not None
+        assert entry["suggested_price_range"]["minimum"] <= entry["suggested_price_range"]["recommended"]
+        assert entry["suggested_price_range"]["recommended"] <= entry["suggested_price_range"]["maximum"]

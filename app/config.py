@@ -37,11 +37,15 @@ class Settings(BaseModel):
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o"
     openai_image_model: str = "gpt-image-1"
-    cloudinary_cloud_name: str | None = None
-    cloudinary_api_key: str | None = None
-    cloudinary_api_secret: str | None = None
-    cloudinary_folder: str = "product-ai-agent"
-    cloudinary_secure: bool = True
+    gemini_enabled: bool = False
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_api_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    aws_region: str | None = None
+    aws_s3_bucket: str | None = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    aws_s3_prefix: str = "product-ai-agent"
     market_research_realtime_enabled: bool = False
     ebay_research_enabled: bool = False
     ebay_client_id: str | None = None
@@ -81,11 +85,15 @@ def get_settings() -> Settings:
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o"),
         openai_image_model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1"),
-        cloudinary_cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
-        cloudinary_api_key=os.getenv("CLOUDINARY_API_KEY"),
-        cloudinary_api_secret=os.getenv("CLOUDINARY_API_SECRET"),
-        cloudinary_folder=os.getenv("CLOUDINARY_FOLDER", "product-ai-agent"),
-        cloudinary_secure=os.getenv("CLOUDINARY_SECURE", "true").lower() == "true",
+        gemini_enabled=os.getenv("GEMINI_ENABLED", "false").lower() == "true",
+        gemini_api_key=os.getenv("GEMINI_API_KEY"),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        gemini_api_base_url=os.getenv("GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
+        aws_region=os.getenv("AWS_REGION"),
+        aws_s3_bucket=os.getenv("AWS_S3_BUCKET"),
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        aws_s3_prefix=os.getenv("AWS_S3_PREFIX", "product-ai-agent"),
         market_research_realtime_enabled=os.getenv("MARKET_RESEARCH_REALTIME_ENABLED", "false").lower() == "true",
         ebay_research_enabled=os.getenv("EBAY_RESEARCH_ENABLED", "false").lower() == "true",
         ebay_client_id=os.getenv("EBAY_CLIENT_ID"),
