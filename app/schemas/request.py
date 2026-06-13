@@ -80,27 +80,3 @@ class VariantCreateRequest(BaseModel):
 
 
 MarketplaceRequestLiteral = Literal["amazon", "ebay", "etsy", "tiktok", "shopify"]
-
-
-class PublishTargetAnalysisRequest(BaseModel):
-    marketplace: MarketplaceRequestLiteral
-    product_identity: PublishTargetProductIdentityRequest | None = None
-    publish_fields: PublishTargetFieldsRequest | None = None
-
-
-class PublishTargetProductIdentityRequest(BaseModel):
-    normalized_title: str | None = Field(default=None, min_length=1, max_length=200)
-    source_title: str | None = Field(default=None, min_length=1, max_length=200)
-    category: str | None = Field(default=None, min_length=1, max_length=200)
-    product_type: str | None = Field(default=None, min_length=1, max_length=120)
-    product_summary: str | None = Field(default=None, min_length=1)
-    features: list[str] | None = None
-    attributes: dict[str, str] | None = None
-
-
-class PublishTargetFieldsRequest(BaseModel):
-    vendor: str | None = Field(default=None, min_length=1, max_length=120)
-    default_price: str | None = Field(default=None, min_length=1, max_length=40)
-    default_sku: str | None = Field(default=None, min_length=1, max_length=80)
-    publish_description: str | None = Field(default=None, min_length=1)
-    publish_title: str | None = Field(default=None, min_length=1, max_length=200)

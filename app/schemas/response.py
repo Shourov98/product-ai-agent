@@ -290,29 +290,23 @@ class SuggestedPriceRangeResponse(BaseModel):
     source: str = "market_research"
 
 
-class PublishTargetAnalysisResponse(BaseModel):
+class MarketplacePricingSnapshotResponse(BaseModel):
     marketplace: MarketplaceLiteral
-    vendor: str
-    default_sku: str
-    default_price: str
-    publish_description: str
+    source_mode: str
+    search_queries: list[str] = Field(default_factory=list)
+    comparable_count: int = Field(ge=0)
+    recommended_price: float | None = Field(default=None, gt=0)
+    currency: str = "USD"
     suggested_price_range: SuggestedPriceRangeResponse | None = None
     market_signal: str = ""
     analysis_summary: str = ""
+    similar_listings: list[ResearchEvidenceResponse] = Field(default_factory=list)
 
 
-PublishTargetAnalysisJobStatusLiteral = Literal["pending", "running", "completed", "failed"]
-
-
-class PublishTargetAnalysisJobResponse(BaseModel):
-    job_id: str
+class ProductPricingSnapshotResponse(BaseModel):
     product_id: str
-    marketplace: MarketplaceLiteral
-    status: PublishTargetAnalysisJobStatusLiteral
-    result: PublishTargetAnalysisResponse | None = None
-    error: str | None = None
-    created_at: str
-    updated_at: str
+    generated_at: str
+    markets: list[MarketplacePricingSnapshotResponse] = Field(default_factory=list)
 
 
 class PaginationMetaResponse(BaseModel):

@@ -17,7 +17,8 @@ from app.agents.vision_agent import VisionAgent
 from app.config import get_settings
 from app.schemas.response import ProductPipelineResponse
 from app.services.image_service import ImagePayload
-from app.services.cloudinary_service import CloudinaryService
+from app.services.gemini_service import GeminiService
+from app.services.s3_service import S3Service
 from app.services.openai_service import OpenAIService
 from app.services.ollama_service import OllamaService
 from app.services.market_research_service import MarketResearchService
@@ -48,12 +49,12 @@ class ProductPipeline:
         settings = get_settings()
         self.output_service = OutputService(
             settings.output_dir,
-            cloudinary_service=CloudinaryService(
-                cloud_name=settings.cloudinary_cloud_name,
-                api_key=settings.cloudinary_api_key,
-                api_secret=settings.cloudinary_api_secret,
-                folder=settings.cloudinary_folder,
-                secure=settings.cloudinary_secure,
+            s3_service=S3Service(
+                region=settings.aws_region,
+                bucket_name=settings.aws_s3_bucket,
+                access_key_id=settings.aws_access_key_id,
+                secret_access_key=settings.aws_secret_access_key,
+                prefix=settings.aws_s3_prefix,
             ),
             local_output_enabled=settings.local_output_enabled,
         )
@@ -67,6 +68,12 @@ class ProductPipeline:
             model=settings.openai_model,
             image_model=settings.openai_image_model,
             enabled=settings.openai_enabled,
+        )
+        self.gemini_service = GeminiService(
+            api_key=settings.gemini_api_key,
+            model=settings.gemini_model,
+            api_base_url=settings.gemini_api_base_url,
+            enabled=settings.gemini_enabled,
         )
         self.vision = vision or VisionAgent(openai_service=self.openai_service)
         self.core = core or CoreAgent(self.ollama_service, self.openai_service)

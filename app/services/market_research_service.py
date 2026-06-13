@@ -118,13 +118,21 @@ class MarketResearchService:
         )
 
     def _build_queries(self, marketplace: str, core_data: CoreProductResponse) -> list[str]:
+        brand = core_data.attributes.get("brand")
+        model = core_data.attributes.get("model") or core_data.attributes.get("model_number")
         color = core_data.attributes.get("color")
         material = core_data.attributes.get("material")
         size = core_data.attributes.get("size") or core_data.attributes.get("capacity")
+        title_terms = title_keywords(core_data.normalized_title or core_data.source_title)
+        summary_terms = title_keywords(core_data.product_summary)
         candidates = [
             core_data.normalized_title,
+            core_data.source_title,
+            " ".join(part for part in [brand, model, core_data.product_type] if part),
             " ".join(part for part in [color, material, core_data.product_type] if part),
             " ".join(part for part in [core_data.category, size, core_data.product_type] if part),
+            " ".join(title_terms[:6]),
+            " ".join(summary_terms[:6]),
         ]
         return unique_strings([item.strip() for item in candidates if item and item.strip()], limit=4)
 
