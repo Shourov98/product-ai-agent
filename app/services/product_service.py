@@ -1041,27 +1041,33 @@ class ProductService:
         if payload is None:
             return None
 
+        similar_listings = self._coerce_gemini_price_sources(payload.get("price_sources"))
         minimum = self._parse_price(payload.get("minimum"))
         maximum = self._parse_price(payload.get("maximum"))
         recommended = self._parse_price(payload.get("recommended"))
         comparable_count = int(self._parse_price(payload.get("comparable_count")) or 0)
-        if minimum is None or maximum is None or recommended is None:
+        suggested: SuggestedPriceRangeResponse | None = None
+        if minimum is not None and maximum is not None and recommended is not None:
+            if maximum < minimum:
+                minimum, maximum = maximum, minimum
+            recommended = min(max(recommended, minimum), maximum)
+            suggested = SuggestedPriceRangeResponse(
+                minimum=minimum,
+                maximum=maximum,
+                recommended=recommended,
+                currency=str(payload.get("currency") or "USD").strip() or "USD",
+                source="gemini_search",
+            )
+        else:
+            suggested = self._pricing_range_from_sources(similar_listings, marketplace=marketplace)
+            if suggested is not None:
+                recommended = suggested.recommended
+        if suggested is None:
             return None
-        if maximum < minimum:
-            minimum, maximum = maximum, minimum
-        recommended = min(max(recommended, minimum), maximum)
 
-        suggested = SuggestedPriceRangeResponse(
-            minimum=minimum,
-            maximum=maximum,
-            recommended=recommended,
-            currency=str(payload.get("currency") or "USD").strip() or "USD",
-            source="gemini_search",
-        )
         search_queries = payload.get("search_queries")
         if not isinstance(search_queries, list):
             search_queries = self._build_gemini_search_queries(core, marketplace, research, listing_title=listing_title)
-        similar_listings = self._coerce_gemini_price_sources(payload.get("price_sources"))
         return {
             "suggested_price_range": suggested,
             "recommended_price": recommended,
@@ -1077,7 +1083,7 @@ class ProductService:
                 suggested_range=suggested,
             ),
             "search_queries": [str(item).strip() for item in search_queries if str(item).strip()],
-            "comparable_count": max(0, comparable_count),
+            "comparable_count": max(0, comparable_count or len(similar_listings)),
             "similar_listings": similar_listings,
         }
 
@@ -1121,17 +1127,21 @@ class ProductService:
                 normalized[canonical] = normalized[alias]
 
         status = str(normalized.get("status") or "").strip().lower()
+        price_sources = normalized.get("price_sources")
+        has_price_sources = isinstance(price_sources, list) and any(
+            isinstance(item, dict) and item.get("price") is not None for item in price_sources
+        )
         if not status:
-            if any(normalized.get(key) is not None for key in ("minimum", "maximum", "recommended")):
+            if any(normalized.get(key) is not None for key in ("minimum", "maximum", "recommended")) or has_price_sources:
                 normalized["status"] = "ok"
             else:
                 return None
         elif status not in {"ok", "insufficient_data"}:
             normalized["status"] = "ok" if any(
                 normalized.get(key) is not None for key in ("minimum", "maximum", "recommended")
-            ) else "insufficient_data"
+            ) or has_price_sources else "insufficient_data"
 
-        if str(normalized.get("status")).strip() != "ok":
+        if str(normalized.get("status")).strip() != "ok" and not has_price_sources:
             return None
         return normalized
 
@@ -1161,6 +1171,44 @@ class ProductService:
                 )
             )
         return sources
+
+    @staticmethod
+    def _pricing_range_from_sources(
+        sources: list[ResearchEvidenceResponse],
+        *,
+        marketplace: MarketplaceLiteral,
+    ) -> SuggestedPriceRangeResponse | None:
+        prices = sorted(
+            float(source.price)
+            for source in sources
+            if source.price is not None and source.price > 0
+        )
+        if len(prices) < 2:
+            return None
+
+        observed_min = prices[0]
+        observed_max = prices[-1]
+        observed_median = median(prices)
+        observed_mean = mean(prices)
+        spread = max(observed_max - observed_min, max(0.08 * observed_median, 5.0))
+        marketplace_bias = {
+            "amazon": 1.0,
+            "ebay": 0.99,
+            "etsy": 1.02,
+            "tiktok": 0.97,
+            "shopify": 1.04,
+        }[marketplace]
+        recommended = round(max(0.01, ((observed_median + observed_mean) / 2) * marketplace_bias), 2)
+        padding = max(spread * 0.18, recommended * 0.06)
+        minimum = round(max(0.01, min(observed_min, recommended - padding)), 2)
+        maximum = round(max(observed_max, recommended + padding), 2)
+        return SuggestedPriceRangeResponse(
+            minimum=minimum,
+            maximum=maximum,
+            recommended=recommended,
+            currency=next((source.currency for source in sources if source.currency), "USD"),
+            source="gemini_search_sources",
+        )
 
     def _gemini_search_enabled(self) -> bool:
         return bool(getattr(self.pipeline.gemini_service, "enabled", False))
