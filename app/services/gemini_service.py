@@ -46,12 +46,13 @@ class GeminiService:
                 }
             ],
             "generationConfig": {
-                "responseMimeType": "application/json",
                 "temperature": 0.2,
             },
         }
         if use_google_search:
             payload["tools"] = [{"google_search": {}}]
+        else:
+            payload["generationConfig"]["responseMimeType"] = "application/json"
 
         url = f"{self.api_base_url}/models/{self.model}:generateContent"
         params = {"key": self.api_key}
