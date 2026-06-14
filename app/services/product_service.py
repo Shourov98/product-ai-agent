@@ -992,37 +992,16 @@ class ProductService:
     @staticmethod
     def _build_query_core(product_name: str) -> CoreProductResponse:
         normalized = product_name.strip()
-        normalized_lower = normalized.lower()
-        category = "General Merchandise"
-        product_type = "general product"
-        attributes: dict[str, str] = {"query": normalized}
-
-        if any(keyword in normalized_lower for keyword in ("ps5", "playstation 5", "playstation5", "sony playstation 5")):
-            category = "Gaming Consoles"
-            product_type = "gaming console"
-            attributes.update({"brand": "Sony", "model": "PlayStation 5"})
-        elif any(keyword in normalized_lower for keyword in ("xbox series x", "xbox series s", "xbox")):
-            category = "Gaming Consoles"
-            product_type = "gaming console"
-            attributes.update({"brand": "Microsoft"})
-        elif any(keyword in normalized_lower for keyword in ("nintendo switch", "switch oled", "switch lite")):
-            category = "Gaming Consoles"
-            product_type = "gaming console"
-            attributes.update({"brand": "Nintendo"})
-        elif any(keyword in normalized_lower for keyword in ("water bottle", "bottle", "flask", "tumbler")):
-            category = "Home & Kitchen"
-            product_type = "water bottle"
-            if "stainless" in normalized_lower:
-                attributes["material"] = "stainless steel"
-            if "white" in normalized_lower:
-                attributes["color"] = "white"
-            if "silver" in normalized_lower and "color" not in attributes:
-                attributes["color"] = "silver"
+        query_keywords = title_keywords(normalized)[:8]
+        attributes: dict[str, str] = {
+            "query": normalized,
+            "query_keywords": ", ".join(query_keywords),
+        }
 
         return CoreProductResponse(
             normalized_title=normalized,
-            category=category,
-            product_type=product_type,
+            category="General Merchandise",
+            product_type="general product",
             product_summary=f"Dynamic pricing lookup for {normalized}.",
             features=[
                 f"Query-driven pricing for {normalized}.",
