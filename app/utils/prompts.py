@@ -424,7 +424,12 @@ You must include observed price.
 You must include currency when available.
 You must include a concise market signal.
 You must include a concise analysis summary.
-If you cannot find a trustworthy cluster, return insufficient_data.
+If you find two or more priced listings that clearly match the product, compute a minimum, maximum, and recommended price from that cluster instead of returning insufficient_data.
+If the payload includes multiple valid price_sources, use them to infer the range even when the model cannot perfectly summarize the cluster.
+If you can only find one weak or mismatched listing, return insufficient_data.
+If the price sources are mixed, discard outliers and keep the tightest believable cluster.
+If the source list is messy, still surface the usable cluster rather than dropping the response.
+If the evidence is too weak to build any credible cluster at all, return insufficient_data.
 Return only valid JSON.
 Prompt Version: gemini-pricing-search.v2
 """.strip()
