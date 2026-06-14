@@ -251,7 +251,7 @@ async def upload_product_import_as_product(
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
 ) -> UploadImportAsProductResponse:
     service = ImportService()
-    return service.upload_as_product(record_id, current_user=current_user)
+    return await service.upload_as_product(record_id, current_user=current_user)
 
 
 @router.get(

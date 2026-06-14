@@ -244,9 +244,11 @@ class ImportService:
         current_user: AuthenticatedUser | None = None,
     ) -> ImportRecordResponse:
         record = self.get_import(record_id, current_user=current_user)
-        current_product = record.product
-        research = await self.product_service.pipeline.research.build_research_bundle(current_product.core)
-        seo = await self.product_service.pipeline.seo.process(current_product.core, research)
+        current_core = record.product.core
+        research = await self.product_service.pipeline.research.build_research_bundle(current_core)
+        current_core = await self.product_service._seed_default_core_price(current_core, research)
+        current_product = record.product.model_copy(update={"core": current_core})
+        seo = await self.product_service.pipeline.seo.process(current_core, research)
         optimized = await self.product_service.optimization_agent.process(
             product=current_product,
             research=research,
@@ -302,6 +304,7 @@ class ImportService:
         source_image = self._load_source_image(record)
         core = record.product.core
         research = await self.product_service.pipeline.research.build_research_bundle(core)
+        core = await self.product_service._seed_default_core_price(core, research)
         seo = await self.product_service.pipeline.seo.process(core, research)
         amazon = record.product.amazon
         ebay = record.product.ebay
@@ -353,7 +356,7 @@ class ImportService:
         self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
-    def upload_as_product(
+    async def upload_as_product(
         self,
         record_id: str,
         current_user: AuthenticatedUser | None = None,
@@ -367,8 +370,15 @@ class ImportService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Resolve this duplicate group before uploading this import record as a product.",
             )
+        product = record.product
+        if not product.core.attributes.get("price", "").strip():
+            research = await self.product_service.pipeline.research.build_research_bundle(product.core)
+            seeded_core = await self.product_service._seed_default_core_price(product.core, research)
+            product = product.model_copy(update={"core": seeded_core})
+            record = self._refresh_record_state(record, product, current_user=current_user)
+            self.store.save(record, user_id=current_user.user_id if current_user is not None else None)
         product_record = self.product_service.create_product_from_pipeline(
-            product=record.product,
+            product=product,
             current_user=current_user,
             status="draft",
         )
