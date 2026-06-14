@@ -936,10 +936,13 @@ class ProductService:
         recommended = self._parse_price(payload.get("recommended"))
         comparable_count = int(self._parse_price(payload.get("comparable_count")) or 0)
         suggested: SuggestedPriceRangeResponse | None = None
-        if minimum is not None and maximum is not None and recommended is not None:
+        if minimum is not None and maximum is not None:
             if maximum < minimum:
                 minimum, maximum = maximum, minimum
-            recommended = min(max(recommended, minimum), maximum)
+            if recommended is None:
+                recommended = round((minimum + maximum) / 2, 2)
+            else:
+                recommended = min(max(recommended, minimum), maximum)
             suggested = SuggestedPriceRangeResponse(
                 minimum=minimum,
                 maximum=maximum,
@@ -989,19 +992,44 @@ class ProductService:
     @staticmethod
     def _build_query_core(product_name: str) -> CoreProductResponse:
         normalized = product_name.strip()
+        normalized_lower = normalized.lower()
+        category = "General Merchandise"
+        product_type = "general product"
+        attributes: dict[str, str] = {"query": normalized}
+
+        if any(keyword in normalized_lower for keyword in ("ps5", "playstation 5", "playstation5", "sony playstation 5")):
+            category = "Gaming Consoles"
+            product_type = "gaming console"
+            attributes.update({"brand": "Sony", "model": "PlayStation 5"})
+        elif any(keyword in normalized_lower for keyword in ("xbox series x", "xbox series s", "xbox")):
+            category = "Gaming Consoles"
+            product_type = "gaming console"
+            attributes.update({"brand": "Microsoft"})
+        elif any(keyword in normalized_lower for keyword in ("nintendo switch", "switch oled", "switch lite")):
+            category = "Gaming Consoles"
+            product_type = "gaming console"
+            attributes.update({"brand": "Nintendo"})
+        elif any(keyword in normalized_lower for keyword in ("water bottle", "bottle", "flask", "tumbler")):
+            category = "Home & Kitchen"
+            product_type = "water bottle"
+            if "stainless" in normalized_lower:
+                attributes["material"] = "stainless steel"
+            if "white" in normalized_lower:
+                attributes["color"] = "white"
+            if "silver" in normalized_lower and "color" not in attributes:
+                attributes["color"] = "silver"
+
         return CoreProductResponse(
             normalized_title=normalized,
-            category="General Merchandise",
-            product_type="general product",
+            category=category,
+            product_type=product_type,
             product_summary=f"Dynamic pricing lookup for {normalized}.",
             features=[
                 f"Query-driven pricing for {normalized}.",
                 "Uses live Google search evidence.",
                 "Ignores mismatched variants and outliers.",
             ],
-            attributes={
-                "query": normalized,
-            },
+            attributes=attributes,
             source_title=normalized,
             vision_confidence=0.0,
         )
@@ -1068,12 +1096,17 @@ class ProductService:
             title = str(item.get("title") or "").strip()
             if not source or not title:
                 continue
+            price_value = None
+            for key in ("price", "sale_price", "list_price", "regular_price", "current_price", "observed_price"):
+                price_value = ProductService._parse_price(item.get(key))
+                if price_value is not None:
+                    break
             sources.append(
                 ResearchEvidenceResponse(
                     source=source,
                     title=title,
                     url=str(item.get("url") or "").strip() or None,
-                    price=ProductService._parse_price(item.get("price")),
+                    price=price_value,
                     currency=str(item.get("currency") or "USD").strip() or "USD",
                     relevance_score=0.92,
                     attributes={},
@@ -1394,16 +1427,22 @@ class ProductService:
                 f"{current_listing_title} price".strip(),
                 f"{identity} price",
                 f"{title} price",
+                f"{current_listing_title} buy".strip(),
+                f"{identity} buy".strip(),
+                f"{identity} retail price".strip(),
+                f"{identity} store price".strip(),
+                f"{identity} Google Shopping".strip(),
+                f"{identity} MSRP".strip(),
                 f"{visual_identity} price".strip(),
                 f"{category_identity} price".strip(),
                 f"{brand} {model} price".strip(),
                 f"{brand} {compact_identity} price".strip(),
-                f"{identity} buy".strip(),
-                f"{identity} MSRP".strip(),
                 f"{identity} {marketplace} price".strip(),
+                f"{marketplace} {identity} price".strip(),
+                f"{identity} current price".strip(),
             ]
             + list(research.search_queries),
-            limit=9,
+            limit=12,
         )
         return [query for query in queries if query.strip()]
 
