@@ -4,6 +4,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.schemas.response import SuggestedPriceRangeResponse
+from app.services.product_service import ProductService
 
 
 @pytest.mark.anyio
@@ -255,3 +257,61 @@ async def test_pricing_snapshot_endpoint_returns_market_ranges(monkeypatch, tmp_
         assert entry["recommended_price"] is not None
         assert entry["suggested_price_range"]["minimum"] <= entry["suggested_price_range"]["recommended"]
         assert entry["suggested_price_range"]["recommended"] <= entry["suggested_price_range"]["maximum"]
+
+
+@pytest.mark.anyio
+async def test_pricing_snapshot_prefers_gemini_search_when_enabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("PRODUCT_STORE_DIR", str(tmp_path / "products"))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    ProductService.reset_shared_state()
+
+    async def fake_gemini_estimate(self, marketplace, research, core):
+        return {
+            "suggested_price_range": SuggestedPriceRangeResponse(
+                minimum=589.99,
+                maximum=649.99,
+                recommended=619.99,
+                currency="USD",
+                source="gemini_search",
+            ),
+            "recommended_price": 619.99,
+            "market_signal": f"{marketplace} Gemini pricing",
+            "analysis_summary": f"{marketplace} Gemini search-grounded pricing recommends a default price around $619.99.",
+            "search_queries": [f"{core.source_title} {marketplace} price"],
+            "comparable_count": 4,
+        }
+
+    monkeypatch.setattr(ProductService, "_build_gemini_pricing_estimate", fake_gemini_estimate)
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            create_response = await client.post(
+                "/api/products/generate/text",
+                data={"title": "Gigabyte GeForce RTX 5070 Windforce OC Graphics Card"},
+                files={
+                    "image": (
+                        "gpu.jpg",
+                        b"\x10\x18\x20\x28" * 32,
+                        "image/jpeg",
+                    )
+                },
+            )
+            assert create_response.status_code == 200
+            product_id = create_response.json()["id"]
+
+            pricing_response = await client.get(f"/api/products/{product_id}/pricing/snapshot")
+    finally:
+        ProductService.reset_shared_state()
+
+    assert pricing_response.status_code == 200
+    body = pricing_response.json()
+    for entry in body["markets"]:
+        assert entry["source_mode"] == "gemini_search"
+        assert entry["recommended_price"] == 619.99
+        assert entry["suggested_price_range"]["minimum"] == 589.99
+        assert entry["suggested_price_range"]["maximum"] == 649.99

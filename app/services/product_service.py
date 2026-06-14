@@ -795,6 +795,24 @@ class ProductService:
         reference_marketplace: MarketplaceLiteral | None = None,
         reference_research: MarketplaceResearchResponse | None = None,
     ) -> MarketplacePricingSnapshotResponse:
+        if self._gemini_search_enabled():
+            gemini_estimate = await self._build_gemini_pricing_estimate(marketplace, research, core)
+            if gemini_estimate is not None:
+                suggested = gemini_estimate["suggested_price_range"]
+                recommended = gemini_estimate["recommended_price"]
+                return MarketplacePricingSnapshotResponse(
+                    marketplace=marketplace,
+                    source_mode="gemini_search",
+                    search_queries=gemini_estimate["search_queries"],
+                    comparable_count=gemini_estimate["comparable_count"],
+                    recommended_price=recommended,
+                    currency=suggested.currency if suggested is not None else "USD",
+                    suggested_price_range=suggested,
+                    market_signal=gemini_estimate["market_signal"],
+                    analysis_summary=gemini_estimate["analysis_summary"],
+                    similar_listings=research.similar_listings[:3],
+                )
+
         if self._has_reliable_market_pricing(research):
             suggested = self._suggested_price_for_marketplace(core, marketplace, research)
             recommended = self._default_price_from_band(suggested, research, core, marketplace)
@@ -814,6 +832,7 @@ class ProductService:
                     recommended,
                     core.product_summary,
                     pricing_mode="live_api",
+                    suggested_range=suggested,
                 ),
                 similar_listings=research.similar_listings[:5],
             )
@@ -840,25 +859,9 @@ class ProductService:
                     recommended,
                     core.product_summary,
                     pricing_mode="cross_market_live_reference",
+                    suggested_range=suggested,
                 ),
                 similar_listings=reference_research.similar_listings[:5],
-            )
-
-        gemini_estimate = await self._build_gemini_pricing_estimate(marketplace, research, core)
-        if gemini_estimate is not None:
-            suggested = gemini_estimate["suggested_price_range"]
-            recommended = gemini_estimate["recommended_price"]
-            return MarketplacePricingSnapshotResponse(
-                marketplace=marketplace,
-                source_mode="gemini_search",
-                search_queries=gemini_estimate["search_queries"],
-                comparable_count=gemini_estimate["comparable_count"],
-                recommended_price=recommended,
-                currency=suggested.currency if suggested is not None else "USD",
-                suggested_price_range=suggested,
-                market_signal=gemini_estimate["market_signal"],
-                analysis_summary=gemini_estimate["analysis_summary"],
-                similar_listings=research.similar_listings[:3],
             )
 
         ai_estimate = await self._build_ai_pricing_estimate(marketplace, research, core)
@@ -908,6 +911,7 @@ class ProductService:
                 recommended,
                 core.product_summary,
                 pricing_mode="estimated_range",
+                suggested_range=suggested,
             ),
             similar_listings=research.similar_listings[:3],
         )
@@ -1078,6 +1082,7 @@ class ProductService:
                 recommended,
                 core.product_summary,
                 pricing_mode="gemini_search",
+                suggested_range=suggested,
             ),
             "search_queries": [str(item).strip() for item in search_queries if str(item).strip()],
             "comparable_count": max(0, comparable_count),
@@ -1165,8 +1170,12 @@ class ProductService:
                 recommended,
                 core.product_summary,
                 pricing_mode="ai_estimate",
+                suggested_range=suggested,
             ),
         }
+
+    def _gemini_search_enabled(self) -> bool:
+        return bool(getattr(self.pipeline.gemini_service, "enabled", False))
 
     @staticmethod
     def _insufficient_pricing_signal(marketplace: MarketplaceLiteral, research: MarketplaceResearchResponse) -> str:
@@ -1211,16 +1220,17 @@ class ProductService:
         core: CoreProductResponse,
         research: MarketResearchBundleResponse,
     ) -> float:
+        if self._gemini_search_enabled():
+            gemini_estimate = await self._build_gemini_pricing_estimate("shopify", research.shopify, core)
+            if gemini_estimate is not None:
+                recommended = self._parse_price(gemini_estimate.get("recommended_price"))
+                if recommended is not None:
+                    return round(recommended, 2)
+
         reference_marketplace, reference_research = self._best_live_pricing_reference(research, core)
         if reference_research is not None and reference_marketplace is not None:
             suggested = self._suggested_price_for_marketplace(core, reference_marketplace, reference_research)
             recommended = self._default_price_from_band(suggested, reference_research, core, reference_marketplace)
-            if recommended is not None:
-                return round(recommended, 2)
-
-        gemini_estimate = await self._build_gemini_pricing_estimate("shopify", research.shopify, core)
-        if gemini_estimate is not None:
-            recommended = self._parse_price(gemini_estimate.get("recommended_price"))
             if recommended is not None:
                 return round(recommended, 2)
 
@@ -1424,6 +1434,7 @@ class ProductService:
         default_price: float | None,
         product_summary: str = "",
         pricing_mode: str = "live_api",
+        suggested_range: SuggestedPriceRangeResponse | None = None,
     ) -> str:
         if default_price is None:
             return (
@@ -1439,12 +1450,14 @@ class ProductService:
             source_label = "estimated pricing range"
         else:
             source_label = "AI price estimate"
-        if research.price_min is not None and research.price_max is not None:
+        summary_min = suggested_range.minimum if suggested_range is not None else research.price_min
+        summary_max = suggested_range.maximum if suggested_range is not None else research.price_max
+        if summary_min is not None and summary_max is not None:
             summary_part = f" {product_summary.strip()}" if product_summary.strip() else ""
             return (
                 f"{product_label} on {marketplace.title()} supports a default price around ${default_price:.2f}."
                 f"{summary_part}"
-                f" {source_label} bands from ${research.price_min:.2f} to ${research.price_max:.2f}."
+                f" {source_label} bands from ${summary_min:.2f} to ${summary_max:.2f}."
             )
         summary_part = f" {product_summary.strip()}" if product_summary.strip() else ""
         return f"{product_label} on {marketplace.title()} {source_label} recommends a default price around ${default_price:.2f}.{summary_part}"
