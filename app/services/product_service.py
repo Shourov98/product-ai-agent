@@ -1129,8 +1129,8 @@ class ProductService:
 
         return CoreProductResponse(
             normalized_title=normalized,
-            category="General Merchandise",
-            product_type="general product",
+            category="Query Derived",
+            product_type="query derived product",
             product_summary=f"Dynamic pricing lookup for {normalized}.",
             features=[
                 f"Query-driven pricing for {normalized}.",
@@ -1486,6 +1486,7 @@ class ProductService:
         color = str(core.attributes.get("color") or "").strip()
         material = str(core.attributes.get("material") or "").strip()
         style = str(core.attributes.get("style") or "").strip()
+        query_keywords = str(core.attributes.get("query_keywords") or "").strip()
         identity = ProductService._product_identity_label(core)
         title = core.source_title.strip() or identity
         current_listing_title = listing_title.strip()
@@ -1493,9 +1494,12 @@ class ProductService:
         compact_identity = " ".join(token.upper() if token in {"rtx", "gtx", "rx"} else token for token in important_tokens[:6]).strip()
         visual_identity = " ".join(part for part in [brand, model, color, material, style, core.product_type] if part).strip()
         category_identity = " ".join(part for part in [brand, core.category, core.product_type, color, material] if part).strip()
+        query_identity = " ".join(part for part in [current_listing_title, query_keywords, identity, title] if part).strip()
 
         queries = unique_strings(
             [
+                f"{query_identity} price".strip(),
+                f"{query_identity} buy".strip(),
                 f"{current_listing_title} price".strip(),
                 f"{identity} price",
                 f"{title} price",
