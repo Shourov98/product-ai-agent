@@ -30,6 +30,7 @@ class GeminiService:
         system_prompt: str,
         user_payload: dict[str, Any],
         use_google_search: bool = False,
+        schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self.enabled or not self.api_key:
             raise GeminiServiceError("Gemini is disabled.")
@@ -47,12 +48,13 @@ class GeminiService:
             ],
             "generationConfig": {
                 "temperature": 0.2,
+                "responseMimeType": "application/json",
             },
         }
+        if schema is not None:
+            payload["generationConfig"]["responseSchema"] = schema
         if use_google_search:
             payload["tools"] = [{"google_search": {}}]
-        else:
-            payload["generationConfig"]["responseMimeType"] = "application/json"
 
         url = f"{self.api_base_url}/models/{self.model}:generateContent"
         params = {"key": self.api_key}
@@ -73,10 +75,7 @@ class GeminiService:
         if not text:
             raise GeminiServiceError("Gemini returned an empty response.")
 
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise GeminiServiceError("Gemini returned invalid JSON.") from exc
+        parsed = self._parse_json_text(text)
         if not isinstance(parsed, dict):
             raise GeminiServiceError("Gemini returned a non-object JSON payload.")
         return parsed
@@ -86,3 +85,27 @@ class GeminiService:
         if isinstance(value, (dict, list, tuple)):
             return json.dumps(value, ensure_ascii=False)
         return str(value)
+
+    @staticmethod
+    def _parse_json_text(text: str) -> dict[str, Any]:
+        candidates = [text.strip()]
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            lines = stripped.splitlines()
+            if len(lines) >= 3:
+                candidates.append("\n".join(lines[1:-1]).strip())
+
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidates.append(stripped[start : end + 1].strip())
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+
+        raise GeminiServiceError("Gemini returned invalid JSON.")

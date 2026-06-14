@@ -65,6 +65,23 @@ from app.utils.product_text import title_keywords, unique_strings
 
 
 class ProductService:
+    _GEMINI_PRICING_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "enum": ["ok", "insufficient_data"]},
+            "minimum": {"type": "number"},
+            "maximum": {"type": "number"},
+            "recommended": {"type": "number"},
+            "currency": {"type": "string"},
+            "market_signal": {"type": "string"},
+            "analysis_summary": {"type": "string"},
+            "search_queries": {"type": "array", "items": {"type": "string"}},
+            "comparable_count": {"type": "integer"},
+        },
+        "required": ["status"],
+        "additionalProperties": False,
+    }
+
     _shared_settings = None
     _shared_pipeline = None
     _shared_store = None
@@ -480,9 +497,11 @@ class ProductService:
         current_user: AuthenticatedUser | None = None,
     ) -> ProductRecordResponse:
         record = self.get_product(product_id, current_user=current_user)
-        current_product = record.product
-        research = await self.pipeline.research.build_research_bundle(current_product.core)
-        seo = await self.pipeline.seo.process(current_product.core, research)
+        current_core = record.product.core
+        research = await self.pipeline.research.build_research_bundle(current_core)
+        current_core = await self._seed_default_core_price(current_core, research)
+        current_product = record.product.model_copy(update={"core": current_core})
+        seo = await self.pipeline.seo.process(current_core, research)
 
         optimized = await self.optimization_agent.process(
             product=current_product,
@@ -562,6 +581,7 @@ class ProductService:
         source_image = self._load_source_image(record)
         core = record.product.core
         research = await self.pipeline.research.build_research_bundle(core)
+        core = await self._seed_default_core_price(core, research)
         seo = await self.pipeline.seo.process(core, research)
         amazon = record.product.amazon
         ebay = record.product.ebay
@@ -613,7 +633,7 @@ class ProductService:
             images=images,
         )
         product = ProductPipelineResponse(
-            core=latest_product.core,
+            core=core,
             amazon=merged_amazon,
             ebay=merged_ebay,
             etsy=merged_etsy,
@@ -772,6 +792,7 @@ class ProductService:
         record = self.get_product(product_id, current_user=current_user)
         core = record.product.core
         research = await self.pipeline.research.build_research_bundle(core)
+        core = await self._seed_default_core_price(core, research)
         reference_marketplace, reference_research = self._best_live_pricing_reference(research, core)
         markets = await asyncio.gather(
             self._build_marketplace_pricing_snapshot("amazon", research.amazon, core, reference_marketplace, reference_research),
@@ -812,6 +833,21 @@ class ProductService:
                     analysis_summary=gemini_estimate["analysis_summary"],
                     similar_listings=research.similar_listings[:3],
                 )
+            return MarketplacePricingSnapshotResponse(
+                marketplace=marketplace,
+                source_mode="insufficient_data",
+                search_queries=research.search_queries,
+                comparable_count=0,
+                recommended_price=None,
+                currency="USD",
+                suggested_price_range=None,
+                market_signal=self._insufficient_pricing_signal(marketplace, research),
+                analysis_summary=(
+                    f"{self._product_identity_label(core)} on {marketplace.title()} "
+                    "does not have enough reliable Google search pricing data yet."
+                ),
+                similar_listings=[],
+            )
 
         if self._has_reliable_market_pricing(research):
             suggested = self._suggested_price_for_marketplace(core, marketplace, research)
@@ -1043,6 +1079,7 @@ class ProductService:
                     "existing_search_queries": research.search_queries,
                 },
                 use_google_search=True,
+                schema=self._GEMINI_PRICING_SCHEMA,
             )
         except GeminiServiceError:
             return None
@@ -1205,6 +1242,8 @@ class ProductService:
             return core
 
         seeded_price = await self._estimate_initial_draft_price(core, research)
+        if seeded_price is None:
+            return core
 
         return core.model_copy(
             update={
@@ -1219,13 +1258,14 @@ class ProductService:
         self,
         core: CoreProductResponse,
         research: MarketResearchBundleResponse,
-    ) -> float:
+    ) -> float | None:
         if self._gemini_search_enabled():
             gemini_estimate = await self._build_gemini_pricing_estimate("shopify", research.shopify, core)
             if gemini_estimate is not None:
                 recommended = self._parse_price(gemini_estimate.get("recommended_price"))
                 if recommended is not None:
                     return round(recommended, 2)
+            return None
 
         reference_marketplace, reference_research = self._best_live_pricing_reference(research, core)
         if reference_research is not None and reference_marketplace is not None:
