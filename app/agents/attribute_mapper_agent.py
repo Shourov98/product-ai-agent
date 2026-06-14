@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.schemas.response import CoreProductResponse, VisionResponse
+from app.services.gemini_service import GeminiService, GeminiServiceError
 from app.services.openai_service import OpenAIService, OpenAIServiceError
 
 
@@ -23,8 +24,13 @@ class AttributeMapperAgent:
         "size name": "size",
     }
 
-    def __init__(self, openai_service: OpenAIService | None = None) -> None:
+    def __init__(
+        self,
+        openai_service: OpenAIService | None = None,
+        gemini_service: GeminiService | None = None,
+    ) -> None:
         self.openai_service = openai_service
+        self.gemini_service = gemini_service
 
     async def process(
         self,
@@ -32,6 +38,39 @@ class AttributeMapperAgent:
         vision_data: VisionResponse,
     ) -> CoreProductResponse:
         fallback = self._build_fallback(core_data, vision_data)
+        if self.gemini_service is not None:
+            try:
+                data = await self.gemini_service.generate_structured_output(
+                    system_prompt=(
+                        "You are a senior ecommerce attribute normalization specialist. "
+                        "You normalize raw product attributes into consistent marketplace-ready fields. "
+                        "You preserve factual accuracy. "
+                        "You do not invent unsupported facts. "
+                        "You do not invent unsupported dimensions. "
+                        "You do not invent unsupported materials. "
+                        "You do not invent unsupported colors. "
+                        "You do not invent unsupported models. "
+                        "You do not invent unsupported categories. "
+                        "You normalize aliases into canonical keys. "
+                        "You use image evidence to fill missing color or style conservatively. "
+                        "You keep the product_type aligned with the product identity. "
+                        "You keep the category aligned with the product identity. "
+                        "You avoid overwriting reliable source data unless it is clearly wrong. "
+                        "You avoid making the attributes noisy. "
+                        "You avoid duplicating the same fact in multiple places. "
+                        "You return only JSON matching the schema. "
+                        "You keep keys clean, short, and marketplace friendly. "
+                        "You keep values short and indexable. "
+                    ),
+                    user_payload={
+                        "core_product": core_data.model_dump(),
+                        "vision_data": vision_data.model_dump(),
+                    },
+                    schema=self._SCHEMA,
+                )
+                return self._from_data(data, fallback)
+            except GeminiServiceError:
+                pass
         if self.openai_service is None:
             return fallback
 
@@ -39,8 +78,24 @@ class AttributeMapperAgent:
             data = await self.openai_service.generate_structured_output(
                 system_prompt=(
                     "You are a senior ecommerce attribute normalization specialist. "
-                    "Normalize raw product attributes into consistent marketplace-ready fields without inventing unsupported facts. "
-                    "Return only JSON matching the schema."
+                    "You normalize raw product attributes into consistent marketplace-ready fields. "
+                    "You preserve factual accuracy. "
+                    "You do not invent unsupported facts. "
+                    "You do not invent unsupported dimensions. "
+                    "You do not invent unsupported materials. "
+                    "You do not invent unsupported colors. "
+                    "You do not invent unsupported models. "
+                    "You do not invent unsupported categories. "
+                    "You normalize aliases into canonical keys. "
+                    "You use image evidence to fill missing color or style conservatively. "
+                    "You keep the product_type aligned with the product identity. "
+                    "You keep the category aligned with the product identity. "
+                    "You avoid overwriting reliable source data unless it is clearly wrong. "
+                    "You avoid making the attributes noisy. "
+                    "You avoid duplicating the same fact in multiple places. "
+                    "You return only JSON matching the schema. "
+                    "You keep keys clean, short, and marketplace friendly. "
+                    "You keep values short and indexable. "
                 ),
                 user_payload={
                     "core_product": core_data.model_dump(),

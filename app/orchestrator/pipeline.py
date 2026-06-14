@@ -20,7 +20,6 @@ from app.services.image_service import ImagePayload
 from app.services.gemini_service import GeminiService
 from app.services.s3_service import S3Service
 from app.services.openai_service import OpenAIService
-from app.services.ollama_service import OllamaService
 from app.services.market_research_service import MarketResearchService
 from app.services.output_service import OutputService
 from app.services.validation_service import ValidationService
@@ -58,11 +57,6 @@ class ProductPipeline:
             ),
             local_output_enabled=settings.local_output_enabled,
         )
-        self.ollama_service = OllamaService(
-            base_url=settings.ollama_base_url,
-            model=settings.ollama_model,
-            enabled=settings.ollama_enabled,
-        )
         self.openai_service = OpenAIService(
             api_key=settings.openai_api_key,
             model=settings.openai_model,
@@ -76,14 +70,14 @@ class ProductPipeline:
             enabled=settings.gemini_enabled,
         )
         self.vision = vision or VisionAgent(openai_service=self.openai_service)
-        self.core = core or CoreAgent(self.ollama_service, self.openai_service)
-        self.attribute_mapper = attribute_mapper or AttributeMapperAgent(self.openai_service)
-        self.amazon = amazon or AmazonAgent(self.ollama_service, self.openai_service)
-        self.tiktok = tiktok or TikTokAgent(self.ollama_service, self.openai_service)
-        self.ebay = ebay or EbayAgent(self.ollama_service, self.openai_service)
-        self.etsy = etsy or EtsyAgent(self.ollama_service, self.openai_service)
-        self.shopify = shopify or ShopifyAgent(self.ollama_service, self.openai_service)
-        self.seo = seo or SeoAgent(self.openai_service)
+        self.core = core or CoreAgent(self.openai_service, self.gemini_service)
+        self.attribute_mapper = attribute_mapper or AttributeMapperAgent(self.openai_service, self.gemini_service)
+        self.amazon = amazon or AmazonAgent(self.openai_service, self.gemini_service)
+        self.tiktok = tiktok or TikTokAgent(self.openai_service, self.gemini_service)
+        self.ebay = ebay or EbayAgent(self.openai_service, self.gemini_service)
+        self.etsy = etsy or EtsyAgent(self.openai_service, self.gemini_service)
+        self.shopify = shopify or ShopifyAgent(self.openai_service, self.gemini_service)
+        self.seo = seo or SeoAgent(self.openai_service, self.gemini_service)
         self.images = ImageAgent(self.openai_service)
         self.research = MarketResearchService(settings)
         self.validation = ValidationService()

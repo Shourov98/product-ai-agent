@@ -30,9 +30,6 @@ class Settings(BaseModel):
     mongodb_imports_collection: str = "product_ai_imports"
     mongodb_runs_collection: str = "product_ai_runs"
     mongodb_users_collection: str = "product_ai_users"
-    ollama_enabled: bool = True
-    ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "qwen3:8b"
     openai_enabled: bool = False
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o"
@@ -78,9 +75,6 @@ def get_settings() -> Settings:
         mongodb_imports_collection=os.getenv("MONGODB_IMPORTS_COLLECTION", "product_ai_imports"),
         mongodb_runs_collection=os.getenv("MONGODB_RUNS_COLLECTION", "product_ai_runs"),
         mongodb_users_collection=os.getenv("MONGODB_USERS_COLLECTION", "product_ai_users"),
-        ollama_enabled=os.getenv("OLLAMA_ENABLED", "true").lower() == "true",
-        ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-        ollama_model=os.getenv("OLLAMA_MODEL", "qwen3:8b"),
         openai_enabled=os.getenv("OPENAI_ENABLED", "false").lower() == "true",
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o"),

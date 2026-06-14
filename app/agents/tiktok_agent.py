@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 
 from app.schemas.response import CoreProductResponse, MarketplaceResearchResponse, SeoInsightsResponse, TikTokResponse
+from app.services.gemini_service import GeminiService, GeminiServiceError
 from app.services.openai_service import OpenAIService, OpenAIServiceError
-from app.services.ollama_service import OllamaService, OllamaServiceError
 from app.utils.prompts import PromptRegistry
 from app.utils.product_text import unique_strings
 
@@ -24,11 +24,11 @@ class TikTokAgent:
 
     def __init__(
         self,
-        ollama_service: OllamaService | None = None,
         openai_service: OpenAIService | None = None,
+        gemini_service: GeminiService | None = None,
     ) -> None:
-        self.ollama_service = ollama_service
         self.openai_service = openai_service
+        self.gemini_service = gemini_service
 
     async def process(
         self,
@@ -42,6 +42,21 @@ class TikTokAgent:
             social_description=self._build_social_description(core_data),
             hashtags=self._build_hashtags(core_data, research, seo),
         )
+        if self.gemini_service is not None:
+            try:
+                data = await self.gemini_service.generate_structured_output(
+                    system_prompt=PromptRegistry.get_copy_prompt("tiktok"),
+                    user_payload={
+                        "core_product": core_data.model_dump(),
+                        "research": research.model_dump() if research is not None else None,
+                        "seo": seo.model_dump() if seo is not None else None,
+                    },
+                    use_google_search=True,
+                    schema=self._SCHEMA,
+                )
+                return self._from_data(data, fallback, self.gemini_service.model)
+            except GeminiServiceError:
+                pass
         if self.openai_service is not None:
             try:
                 data = await self.openai_service.generate_structured_output(
@@ -54,32 +69,15 @@ class TikTokAgent:
                     schema_name="tiktok_listing",
                     schema=self._SCHEMA,
                 )
-                return self._from_data(data, fallback)
+                return self._from_data(data, fallback, self.openai_service.model)
             except OpenAIServiceError:
                 pass
 
-        if self.ollama_service is None:
-            return fallback
+        return fallback
 
-        prompt = (
-            "You are a senior TikTok listing agent. Return only valid JSON with keys title, "
-            "social_description, hashtags.\n"
-            "Write for social commerce, not internal tooling. Do not mention AI or confidence.\n"
-            "Use a stop-scroll hook, product payoff, use-case, and soft CTA in social_description.\n"
-            "Generate SEO-aware hashtags for TikTok Shop using broad, niche, and product-intent tags.\n"
-            f"Core product: {core_data.model_dump()}\n"
-        )
-        try:
-            result = await self.ollama_service.generate_json(prompt=prompt)
-        except OllamaServiceError:
-            return fallback
-
-        return self._from_data(result.parsed, fallback)
-
-    def _from_data(self, data: dict[str, object], fallback: TikTokResponse) -> TikTokResponse:
+    def _from_data(self, data: dict[str, object], fallback: TikTokResponse, model_name: str) -> TikTokResponse:
         from datetime import datetime, UTC
         from app.schemas.response import AgentAuditMetadata
-        model_name = self.openai_service.model if self.openai_service and self.openai_service.enabled else "ollama"
         audit_meta = AgentAuditMetadata(
             prompt_version="tiktok-copy.v2",
             model_version=model_name,

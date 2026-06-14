@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.schemas.response import CoreProductResponse, MarketResearchBundleResponse, SeoInsightsResponse
+from app.services.gemini_service import GeminiService, GeminiServiceError
 from app.services.openai_service import OpenAIService, OpenAIServiceError
 from app.utils.product_text import title_keywords, unique_strings
 
@@ -21,8 +22,13 @@ class SeoAgent:
         },
     }
 
-    def __init__(self, openai_service: OpenAIService | None = None) -> None:
+    def __init__(
+        self,
+        openai_service: OpenAIService | None = None,
+        gemini_service: GeminiService | None = None,
+    ) -> None:
         self.openai_service = openai_service
+        self.gemini_service = gemini_service
 
     async def process(
         self,
@@ -30,6 +36,43 @@ class SeoAgent:
         research: MarketResearchBundleResponse,
     ) -> SeoInsightsResponse:
         fallback = self._build_fallback(core_data, research)
+        if self.gemini_service is not None:
+            try:
+                data = await self.gemini_service.generate_structured_output(
+                    system_prompt=(
+                        "You are a senior marketplace SEO strategist. "
+                        "You build keyword clusters from canonical product data, marketplace signals, and research evidence. "
+                        "You prefer evidence-backed keyword choices over generic broad terms. "
+                        "You prefer product identity terms before category noise. "
+                        "You prefer the image-derived product identity when the source title is weak. "
+                        "You produce practical keyword clusters that can help real listings rank. "
+                        "You preserve factual accuracy. "
+                        "You do not invent product capabilities. "
+                        "You do not invent unsupported compatibility. "
+                        "You do not invent unsupported brand claims. "
+                        "You keep primary keywords tightly aligned with the item identity. "
+                        "You keep secondary keywords broader but still relevant. "
+                        "You build title terms that can be used in marketplace titles. "
+                        "You build marketplace_keywords that are usable on each channel. "
+                        "You use Google search evidence when available. "
+                        "You use competitor-style research evidence when available. "
+                        "You do not add filler terms that weaken search quality. "
+                        "You do not add terms that describe a different product. "
+                        "You do not output commentary. "
+                        "You return only JSON matching the schema. "
+                        "You keep the output concise, structured, and searchable. "
+                    ),
+                    user_payload={
+                        "core_product": core_data.model_dump(),
+                        "research": research.model_dump(),
+                    },
+                    use_google_search=True,
+                    schema=self._SCHEMA,
+                )
+                return self._from_data(data, fallback)
+            except GeminiServiceError:
+                pass
+
         if self.openai_service is None:
             return fallback
 
@@ -37,8 +80,24 @@ class SeoAgent:
             data = await self.openai_service.generate_structured_output(
                 system_prompt=(
                     "You are a senior marketplace SEO strategist. "
-                    "Produce practical keyword clusters from canonical product data and competitor-style research evidence. "
-                    "Return only JSON matching the schema."
+                    "You build keyword clusters from canonical product data and competitor-style research evidence. "
+                    "You prefer evidence-backed keyword choices over generic broad terms. "
+                    "You prefer product identity terms before category noise. "
+                    "You prefer the image-derived product identity when the source title is weak. "
+                    "You produce practical keyword clusters that can help real listings rank. "
+                    "You preserve factual accuracy. "
+                    "You do not invent product capabilities. "
+                    "You do not invent unsupported compatibility. "
+                    "You do not invent unsupported brand claims. "
+                    "You keep primary keywords tightly aligned with the item identity. "
+                    "You keep secondary keywords broader but still relevant. "
+                    "You build title terms that can be used in marketplace titles. "
+                    "You build marketplace_keywords that are usable on each channel. "
+                    "You do not add filler terms that weaken search quality. "
+                    "You do not add terms that describe a different product. "
+                    "You do not output commentary. "
+                    "You return only JSON matching the schema. "
+                    "You keep the output concise, structured, and searchable. "
                 ),
                 user_payload={
                     "core_product": core_data.model_dump(),

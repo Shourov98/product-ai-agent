@@ -122,14 +122,24 @@ class MarketResearchService:
         model = core_data.attributes.get("model") or core_data.attributes.get("model_number")
         color = core_data.attributes.get("color")
         material = core_data.attributes.get("material")
+        style = core_data.attributes.get("style")
         size = core_data.attributes.get("size") or core_data.attributes.get("capacity")
         title_terms = title_keywords(core_data.normalized_title or core_data.source_title)
         summary_terms = title_keywords(core_data.product_summary)
+        visual_identity = " ".join(
+            part for part in [brand, model, color, material, style, core_data.product_type] if part
+        )
+        category_identity = " ".join(
+            part for part in [brand, core_data.category, core_data.product_type, color, material] if part
+        )
         candidates = [
             core_data.normalized_title,
             core_data.source_title,
+            visual_identity,
+            category_identity,
             " ".join(part for part in [brand, model, core_data.product_type] if part),
             " ".join(part for part in [color, material, core_data.product_type] if part),
+            " ".join(part for part in [style, color, core_data.product_type] if part),
             " ".join(part for part in [core_data.category, size, core_data.product_type] if part),
             " ".join(title_terms[:6]),
             " ".join(summary_terms[:6]),
