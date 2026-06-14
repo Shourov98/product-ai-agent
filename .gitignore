@@ -5,8 +5,6 @@ build/
 dist/
 wheels/
 output/
-Datasets/
-*.rar
 *.egg-info
 
 # Virtual environments

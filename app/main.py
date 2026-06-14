@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from app.api.forecasting import router as forecasting_router
 from app.api.routes import router as api_router
 from app.config import get_settings
 from app.services.import_service import ImportService
@@ -13,8 +12,6 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name, version=settings.app_version, debug=settings.debug)
     app.include_router(api_router, prefix="/api")
-    app.include_router(forecasting_router)
-
     @app.on_event("startup")
     async def warm_service_caches() -> None:
         ProductService()
@@ -24,7 +21,6 @@ def create_app() -> FastAPI:
     async def close_service_caches() -> None:
         ImportService.reset_shared_state()
         ProductService.reset_shared_state()
-
     return app
 
 
