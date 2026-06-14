@@ -44,6 +44,7 @@ from app.schemas.response import (
     PaginatedProductListResponse,
     PipelineValidationResponse,
     ProductPricingSnapshotResponse,
+    DynamicPricingQueryResponse,
     ProductListItemResponse,
     ProductPipelineResponse,
     ProductRecordResponse,
@@ -832,6 +833,23 @@ class ProductService:
             markets=markets,
         )
 
+    async def query_product_pricing(
+        self,
+        product_name: str,
+        marketplace: MarketplaceLiteral | None = None,
+    ) -> DynamicPricingQueryResponse:
+        core = self._build_query_core(product_name)
+        research = self._empty_pricing_research_bundle()
+        markets = [marketplace] if marketplace is not None else ["amazon", "ebay", "etsy", "tiktok", "shopify"]
+        results = await asyncio.gather(
+            *(self._build_marketplace_pricing_snapshot(market, self._research_for_marketplace(research, market), core, listing_title=product_name) for market in markets)
+        )
+        return DynamicPricingQueryResponse(
+            query=product_name,
+            generated_at=self._timestamp(),
+            markets=list(results),
+        )
+
     async def _build_marketplace_pricing_snapshot(
         self,
         marketplace: MarketplaceLiteral,
@@ -1098,6 +1116,26 @@ class ProductService:
         )
 
     @staticmethod
+    def _build_query_core(product_name: str) -> CoreProductResponse:
+        normalized = product_name.strip()
+        return CoreProductResponse(
+            normalized_title=normalized,
+            category="General Merchandise",
+            product_type="general product",
+            product_summary=f"Dynamic pricing lookup for {normalized}.",
+            features=[
+                f"Query-driven pricing for {normalized}.",
+                "Uses live Google search evidence.",
+                "Ignores mismatched variants and outliers.",
+            ],
+            attributes={
+                "query": normalized,
+            },
+            source_title=normalized,
+            vision_confidence=0.0,
+        )
+
+    @staticmethod
     def _normalize_gemini_pricing_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(payload, dict):
             return None
@@ -1121,6 +1159,7 @@ class ProductService:
             "query_candidates": "search_queries",
             "sources": "price_sources",
             "listings": "price_sources",
+            "similar_listings": "price_sources",
         }
         for alias, canonical in key_aliases.items():
             if canonical not in normalized and alias in normalized:

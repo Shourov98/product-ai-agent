@@ -309,6 +309,12 @@ class ProductPricingSnapshotResponse(BaseModel):
     markets: list[MarketplacePricingSnapshotResponse] = Field(default_factory=list)
 
 
+class DynamicPricingQueryResponse(BaseModel):
+    query: str
+    generated_at: str
+    markets: list[MarketplacePricingSnapshotResponse] = Field(default_factory=list)
+
+
 class PaginationMetaResponse(BaseModel):
     page: int = Field(ge=1)
     page_size: int = Field(ge=1)

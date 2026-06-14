@@ -8,11 +8,13 @@ from app.orchestrator.pipeline import ProductPipeline
 from app.schemas.imports import DuplicateResolutionResponse, ImportRecordResponse, ImportUploadResponse, PaginatedImportListResponse, UploadImportAsProductResponse
 from app.schemas.request import (
     MarketplaceRequestLiteral,
+    PricingQueryRequest,
     ProductOptimizationRequest,
     ProductUpdateRequest,
     VariantCreateRequest,
 )
 from app.schemas.response import (
+    DynamicPricingQueryResponse,
     PaginatedProductListResponse,
     ProductPipelineResponse,
     ProductPricingSnapshotResponse,
@@ -51,6 +53,19 @@ async def _read_image_payload(image: UploadFile) -> ImagePayload:
 @router.get("/health")
 async def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.post(
+    "/pricing/query",
+    response_model=DynamicPricingQueryResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def query_product_pricing(
+    payload: PricingQueryRequest,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> DynamicPricingQueryResponse:
+    service = ProductService()
+    return await service.query_product_pricing(payload.product_name, marketplace=payload.marketplace)
 
 
 @router.post(

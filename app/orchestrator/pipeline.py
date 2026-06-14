@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-import asyncio
-from dataclasses import dataclass
-from pathlib import Path
-
+from app.config import get_settings
+from app.services.image_service import ImagePayload
+from app.services.gemini_service import GeminiService
+from app.services.openai_service import OpenAIService
+from app.services.market_research_service import MarketResearchService
+from app.services.output_service import OutputService
+from app.services.validation_service import ValidationService
+from app.services.s3_service import S3Service
 from app.agents.amazon_agent import AmazonAgent
 from app.agents.attribute_mapper_agent import AttributeMapperAgent
 from app.agents.core_agent import CoreAgent
@@ -14,21 +18,9 @@ from app.agents.seo_agent import SeoAgent
 from app.agents.shopify_agent import ShopifyAgent
 from app.agents.tiktok_agent import TikTokAgent
 from app.agents.vision_agent import VisionAgent
-from app.config import get_settings
 from app.schemas.response import ProductPipelineResponse
-from app.services.image_service import ImagePayload
-from app.services.gemini_service import GeminiService
-from app.services.s3_service import S3Service
-from app.services.openai_service import OpenAIService
-from app.services.market_research_service import MarketResearchService
-from app.services.output_service import OutputService
-from app.services.validation_service import ValidationService
 
-
-@dataclass(slots=True)
-class PipelineRunResult:
-    run_dir: Path
-    response: ProductPipelineResponse
+from app.orchestrator.agent_graph import PipelineRunResult, ProductAgentGraph
 
 
 class ProductPipeline:
@@ -81,71 +73,25 @@ class ProductPipeline:
         self.images = ImageAgent(self.openai_service)
         self.research = MarketResearchService(settings)
         self.validation = ValidationService()
+        self.graph = ProductAgentGraph(
+            vision=self.vision,
+            core=self.core,
+            attribute_mapper=self.attribute_mapper,
+            amazon=self.amazon,
+            tiktok=self.tiktok,
+            ebay=self.ebay,
+            etsy=self.etsy,
+            shopify=self.shopify,
+            seo=self.seo,
+            images=self.images,
+            research=self.research,
+            validation=self.validation,
+            output_service=self.output_service,
+        )
 
     async def run(self, image: ImagePayload, title: str) -> ProductPipelineResponse:
         result = await self.run_with_context(image, title)
         return result.response
 
     async def run_with_context(self, image: ImagePayload, title: str) -> PipelineRunResult:
-        run_dir = self.output_service.create_run_dir()
-        vision_data = await self.vision.process(image)
-        self.output_service.save_json(run_dir, "vision", vision_data.model_dump())
-        core_data = await self.core.process(title, vision_data)
-        core_data = await self.attribute_mapper.process(core_data, vision_data)
-        self.output_service.save_json(run_dir, "core", core_data.model_dump())
-        research_data = await self.research.build_research_bundle(core_data)
-        self.output_service.save_json(run_dir, "research", research_data.model_dump())
-        seo_data = await self.seo.process(core_data, research_data)
-        self.output_service.save_json(run_dir, "seo", seo_data.model_dump())
-
-        amazon_data, tiktok_data, ebay_data, etsy_data, shopify_data = await asyncio.gather(
-            self.amazon.process(core_data, research=research_data.amazon, seo=seo_data),
-            self.tiktok.process(core_data, research=research_data.tiktok, seo=seo_data),
-            self.ebay.process(core_data, research=research_data.ebay, seo=seo_data),
-            self.etsy.process(core_data, research=research_data.etsy, seo=seo_data),
-            self.shopify.process(core_data, research=research_data.shopify, seo=seo_data),
-        )
-        self.output_service.save_json(run_dir, "amazon", amazon_data.model_dump())
-        self.output_service.save_json(run_dir, "tiktok", tiktok_data.model_dump())
-        self.output_service.save_json(run_dir, "ebay", ebay_data.model_dump())
-        self.output_service.save_json(run_dir, "etsy", etsy_data.model_dump())
-        self.output_service.save_json(run_dir, "shopify", shopify_data.model_dump())
-        image_data = await self.images.process(
-            image=image,
-            core_data=core_data,
-            amazon_data=amazon_data,
-            ebay_data=ebay_data,
-            etsy_data=etsy_data,
-            tiktok_data=tiktok_data,
-            shopify_data=shopify_data,
-            run_dir=run_dir,
-            output_service=self.output_service,
-        )
-        self.output_service.save_json(run_dir, "images", image_data.model_dump())
-        validation_data = self.validation.validate_pipeline(
-            core=core_data,
-            amazon=amazon_data,
-            ebay=ebay_data,
-            etsy=etsy_data,
-            tiktok=tiktok_data,
-            shopify=shopify_data,
-            images=image_data,
-        )
-        self.output_service.save_json(run_dir, "validation", validation_data.model_dump())
-
-        response = ProductPipelineResponse(
-            core=core_data,
-            amazon=amazon_data,
-            etsy=etsy_data,
-            tiktok=tiktok_data,
-            ebay=ebay_data,
-            shopify=shopify_data,
-            images=image_data,
-            intelligence={
-                "research": research_data,
-                "seo": seo_data,
-                "validation": validation_data,
-            },
-        )
-        self.output_service.save_json(run_dir, "final", response.model_dump())
-        return PipelineRunResult(run_dir=run_dir, response=response)
+        return await self.graph.execute(image, title)
