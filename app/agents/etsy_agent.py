@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from app.schemas.response import CoreProductResponse, EtsyResponse, MarketplaceResearchResponse, SeoInsightsResponse
+from app.services.gemini_service import GeminiService, GeminiServiceError
 from app.services.openai_service import OpenAIService, OpenAIServiceError
-from app.services.ollama_service import OllamaService, OllamaServiceError
 from app.utils.prompts import PromptRegistry
 from app.utils.product_text import title_keywords, unique_strings
 
@@ -25,11 +25,11 @@ class EtsyAgent:
 
     def __init__(
         self,
-        ollama_service: OllamaService | None = None,
         openai_service: OpenAIService | None = None,
+        gemini_service: GeminiService | None = None,
     ) -> None:
-        self.ollama_service = ollama_service
         self.openai_service = openai_service
+        self.gemini_service = gemini_service
 
     async def process(
         self,
@@ -46,6 +46,21 @@ class EtsyAgent:
             occasion=self._build_occasion(core_data),
             seo_keywords=self._build_keywords(core_data, research, seo),
         )
+        if self.gemini_service is not None:
+            try:
+                data = await self.gemini_service.generate_structured_output(
+                    system_prompt=PromptRegistry.get_copy_prompt("etsy"),
+                    user_payload={
+                        "core_product": core_data.model_dump(),
+                        "research": research.model_dump() if research is not None else None,
+                        "seo": seo.model_dump() if seo is not None else None,
+                    },
+                    use_google_search=True,
+                    schema=self._SCHEMA,
+                )
+                return self._from_data(data, fallback, self.gemini_service.model)
+            except GeminiServiceError:
+                pass
         if self.openai_service is not None:
             try:
                 data = await self.openai_service.generate_structured_output(
@@ -58,29 +73,15 @@ class EtsyAgent:
                     schema_name="etsy_listing",
                     schema=self._SCHEMA,
                 )
-                return self._from_data(data, fallback)
+                return self._from_data(data, fallback, self.openai_service.model)
             except OpenAIServiceError:
                 pass
 
-        if self.ollama_service is None:
-            return fallback
+        return fallback
 
-        prompt = (
-            "You are a senior Etsy listing agent. Return only valid JSON with keys "
-            "title, description, tags, materials, occasion, seo_keywords.\n"
-            "Do not mention AI, confidence, or internal metadata.\n"
-            f"Core product: {core_data.model_dump()}\n"
-        )
-        try:
-            result = await self.ollama_service.generate_json(prompt=prompt)
-        except OllamaServiceError:
-            return fallback
-        return self._from_data(result.parsed, fallback)
-
-    def _from_data(self, data: dict[str, object], fallback: EtsyResponse) -> EtsyResponse:
+    def _from_data(self, data: dict[str, object], fallback: EtsyResponse, model_name: str) -> EtsyResponse:
         from datetime import datetime, UTC
         from app.schemas.response import AgentAuditMetadata
-        model_name = self.openai_service.model if self.openai_service and self.openai_service.enabled else "ollama"
         audit_meta = AgentAuditMetadata(
             prompt_version="etsy-copy.v2",
             model_version=model_name,

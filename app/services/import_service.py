@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
+from urllib.parse import urlsplit
 from urllib.request import urlopen
 from uuid import uuid4
 
@@ -735,10 +737,11 @@ class ImportService:
     def _load_source_image(record: ImportRecordResponse) -> ImagePayload:
         source = record.product.images.source
         if source.absolute_path.startswith("http://") or source.absolute_path.startswith("https://"):
-            with urlopen(source.absolute_path, timeout=30) as response:
+            remote_url = ProductService._safe_remote_url(source.absolute_path)
+            with urlopen(remote_url, timeout=30) as response:
                 payload = response.read()
             return ImagePayload(
-                filename=source.absolute_path.rstrip("/").split("/")[-1] or "source.bin",
+                filename=Path(urlsplit(remote_url).path).name or "source.bin",
                 content_type=source.mime_type,
                 data=payload,
             )

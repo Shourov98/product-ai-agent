@@ -19,6 +19,7 @@ from app.schemas.response import (
 )
 from app.services.image_service import ImagePayload
 from app.services.openai_service import OpenAIService, OpenAIServiceError
+from app.utils.prompts import PromptRegistry
 
 try:
     from PIL import Image
@@ -33,101 +34,17 @@ class ImageAgent:
         "amazon": {
             "size": "1024x1024",
             "background": "white",
-            "prompt_prefix": (
-                "You are a senior ecommerce product imaging agent.\n\n"
-                "The uploaded product is the source of truth and must remain unchanged.\n\n"
-                "You may modify only:\n"
-                "- background\n"
-                "- lighting mood\n"
-                "- framing\n"
-                "- scene styling\n"
-                "- presentation environment\n\n"
-                "You must not modify:\n"
-                "- product color\n"
-                "- product material\n"
-                "- product finish\n"
-                "- product shape\n"
-                "- proportions\n"
-                "- logo placement\n"
-                "- visible construction details\n"
-                "- attached components\n"
-                "- product identity\n\n"
-                "The generated result must look like the exact same physical product placed into a marketplace-specific presentation.\n\n"
-                "No text, no watermark, no extra props unless explicitly allowed by marketplace policy.\n\n"
-                "Amazon Specific Rules:\n"
-                "Create a production-grade Amazon main image.\n"
-                "Use a pure white background.\n"
-                "Single product only.\n"
-                "No props, no text, no badges, no decorations.\n"
-                "Keep the exact product unchanged.\n"
-                "Center the product and keep it fully visible.\n\n"
-                "Prompt Version: image-amazon.v4"
-            ),
+            "prompt_prefix": PromptRegistry.get_image_prompt("amazon"),
         },
         "ebay": {
             "size": "1024x1024",
             "background": "white",
-            "prompt_prefix": (
-                "You are a senior ecommerce product imaging agent.\n\n"
-                "The uploaded product is the source of truth and must remain unchanged.\n\n"
-                "You may modify only:\n"
-                "- background\n"
-                "- lighting mood\n"
-                "- framing\n"
-                "- scene styling\n"
-                "- presentation environment\n\n"
-                "You must not modify:\n"
-                "- product color\n"
-                "- product material\n"
-                "- product finish\n"
-                "- product shape\n"
-                "- proportions\n"
-                "- logo placement\n"
-                "- visible construction details\n"
-                "- attached components\n"
-                "- product identity\n\n"
-                "The generated result must look like the exact same physical product placed into a marketplace-specific presentation.\n\n"
-                "No text, no watermark, no extra props unless explicitly allowed by marketplace policy.\n\n"
-                "eBay Specific Rules:\n"
-                "Create a clean eBay-ready studio product image.\n"
-                "Use a neutral white or very light background.\n"
-                "Keep the exact product unchanged.\n"
-                "No text overlays, badges, or distracting props.\n\n"
-                "Prompt Version: image-ebay.v4"
-            ),
+            "prompt_prefix": PromptRegistry.get_image_prompt("ebay"),
         },
         "tiktok": {
             "size": "1024x1536",
             "background": "opaque",
-            "prompt_prefix": (
-                "You are a senior ecommerce product imaging agent.\n\n"
-                "The uploaded product is the source of truth and must remain unchanged.\n\n"
-                "You may modify only:\n"
-                "- background\n"
-                "- lighting mood\n"
-                "- framing\n"
-                "- scene styling\n"
-                "- presentation environment\n\n"
-                "You must not modify:\n"
-                "- product color\n"
-                "- product material\n"
-                "- product finish\n"
-                "- product shape\n"
-                "- proportions\n"
-                "- logo placement\n"
-                "- visible construction details\n"
-                "- attached components\n"
-                "- product identity\n\n"
-                "The generated result must look like the exact same physical product placed into a marketplace-specific presentation.\n\n"
-                "No text, no watermark, no extra props unless explicitly allowed by marketplace policy.\n\n"
-                "TikTok Shop Specific Rules:\n"
-                "Create a vertical TikTok Shop hero image.\n"
-                "Change only the background and scene styling.\n"
-                "Keep the exact product unchanged.\n"
-                "Use an energetic, premium, scroll-stopping commerce scene.\n"
-                "No text or logo overlays.\n\n"
-                "Prompt Version: image-tiktok.v4"
-            ),
+            "prompt_prefix": PromptRegistry.get_image_prompt("tiktok"),
             "composite_scale": 0.76,
             "shadow_opacity": 68,
             "shadow_blur": 48,
@@ -136,35 +53,7 @@ class ImageAgent:
         "etsy": {
             "size": "1200x900",
             "background": "opaque",
-            "prompt_prefix": (
-                "You are a senior ecommerce product imaging agent.\n\n"
-                "The uploaded product is the source of truth and must remain unchanged.\n\n"
-                "You may modify only:\n"
-                "- background\n"
-                "- lighting mood\n"
-                "- framing\n"
-                "- scene styling\n"
-                "- presentation environment\n\n"
-                "You must not modify:\n"
-                "- product color\n"
-                "- product material\n"
-                "- product finish\n"
-                "- product shape\n"
-                "- proportions\n"
-                "- logo placement\n"
-                "- visible construction details\n"
-                "- attached components\n"
-                "- product identity\n\n"
-                "The generated result must look like the exact same physical product placed into a marketplace-specific presentation.\n\n"
-                "No text, no watermark, no extra props unless explicitly allowed by marketplace policy.\n\n"
-                "Etsy Specific Rules:\n"
-                "Create an Etsy-ready editorial product image.\n"
-                "Change only the background and visual environment.\n"
-                "Keep the exact product unchanged.\n"
-                "Use a tasteful handcrafted or lifestyle-inspired backdrop.\n"
-                "No text, badges, or logos.\n\n"
-                "Prompt Version: image-etsy.v4"
-            ),
+            "prompt_prefix": PromptRegistry.get_image_prompt("etsy"),
             "composite_scale": 0.7,
             "shadow_opacity": 56,
             "shadow_blur": 30,
@@ -173,35 +62,7 @@ class ImageAgent:
         "shopify": {
             "size": "1024x1024",
             "background": "opaque",
-            "prompt_prefix": (
-                "You are a senior ecommerce product imaging agent.\n\n"
-                "The uploaded product is the source of truth and must remain unchanged.\n\n"
-                "You may modify only:\n"
-                "- background\n"
-                "- lighting mood\n"
-                "- framing\n"
-                "- scene styling\n"
-                "- presentation environment\n\n"
-                "You must not modify:\n"
-                "- product color\n"
-                "- product material\n"
-                "- product finish\n"
-                "- product shape\n"
-                "- proportions\n"
-                "- logo placement\n"
-                "- visible construction details\n"
-                "- attached components\n"
-                "- product identity\n\n"
-                "The generated result must look like the exact same physical product placed into a marketplace-specific presentation.\n\n"
-                "No text, no watermark, no extra props unless explicitly allowed by marketplace policy.\n\n"
-                "Shopify Specific Rules:\n"
-                "Create a polished Shopify storefront hero image.\n"
-                "Change only the background and presentation styling.\n"
-                "Keep the exact product unchanged.\n"
-                "Use premium ecommerce lighting and a refined brand-style scene.\n"
-                "No text, badges, or logos.\n\n"
-                "Prompt Version: image-shopify.v4"
-            ),
+            "prompt_prefix": PromptRegistry.get_image_prompt("shopify"),
             "composite_scale": 0.72,
             "shadow_opacity": 58,
             "shadow_blur": 34,
@@ -415,6 +276,7 @@ class ImageAgent:
                 expected_height=expected_height,
                 background=profile["background"],
                 marketplace=marketplace,
+                generation_mode="local_composite_from_cutout",
             )
             return ImageVariantResponse(
                 marketplace=marketplace,
@@ -478,6 +340,7 @@ class ImageAgent:
         prompt = (
             f"Remove the background and isolate the product for ecommerce use. "
             f"Preserve the exact product shape, color, and material. "
+            "Remove any text already present in the source image, including captions, labels, bottom banners, title strips, watermarks, underline bars, and decorative graphic elements. "
             "Do not add any text, captions, labels, banners, watermark shapes, underline bars, or decorative graphic elements. "
             "Return only the isolated product on a transparent background. "
             f"Product title: {core_data.normalized_title}. "
@@ -587,6 +450,7 @@ class ImageAgent:
                 expected_height=expected_height,
                 background=profile["background"],
                 marketplace=marketplace,
+                generation_mode="local_composite_from_cutout",
             )
             return ImageVariantResponse(
                 marketplace=marketplace,
@@ -665,6 +529,7 @@ class ImageAgent:
                 expected_height=expected_height,
                 background=profile["background"],
                 marketplace=marketplace,
+                generation_mode="local_composite_from_cutout",
             )
             return ImageVariantResponse(
                 marketplace=marketplace,
@@ -994,6 +859,7 @@ class ImageAgent:
         expected_height: int | None,
         background: str,
         marketplace: MarketplaceName,
+        generation_mode: str = "",
         errors: list[str] | None = None,
     ) -> ImageValidationResponse:
         collected_errors = list(errors or [])
@@ -1032,7 +898,7 @@ class ImageAgent:
             except Exception as exc:
                 collected_errors.append(f"Could not verify white background: {exc}")
 
-        if marketplace == "amazon" and Image is not None:
+        if marketplace == "amazon" and Image is not None and generation_mode != "local_composite_from_cutout":
             try:
                 with Image.open(BytesIO(payload)) as image:
                     rgb_image = image.convert("RGB")
@@ -1062,9 +928,10 @@ class ImageAgent:
                     banner_issue = self._detect_bottom_text_banner(rgb_image)
                     if banner_issue is not None:
                         collected_errors.append(banner_issue)
-                    shadow_bar_issue = self._detect_flat_shadow_bar(rgb_image)
-                    if shadow_bar_issue is not None:
-                        collected_errors.append(shadow_bar_issue)
+                    if generation_mode != "local_composite_from_cutout":
+                        shadow_bar_issue = self._detect_flat_shadow_bar(rgb_image)
+                        if shadow_bar_issue is not None:
+                            collected_errors.append(shadow_bar_issue)
             except Exception as exc:
                 collected_errors.append(f"Could not inspect styled image artifacts: {exc}")
 
@@ -1403,6 +1270,56 @@ class ImageAgent:
                 if is_low and is_small and is_short_banner:
                     for cx, cy in component["coords"]:
                         cleaned_pixels[cx, cy] = (0, 0, 0, 0)
+
+            # Remove low bottom text/banner rows even when they lightly connect
+            # to the main product mask. Text strips usually create many short
+            # disconnected alpha runs near the bottom of the cutout.
+            start_y = int(height * 0.68)
+            rows_to_clear: list[int] = []
+            alpha_after_components = cleaned.getchannel("A")
+            alpha_pixels = alpha_after_components.load()
+            for y in range(start_y, height):
+                opaque_pixels = 0
+                segments = 0
+                in_segment = False
+                longest_run = 0
+                current_run = 0
+                for x in range(width):
+                    is_opaque = alpha_pixels[x, y] > 0
+                    if is_opaque:
+                        opaque_pixels += 1
+                        current_run += 1
+                        if not in_segment:
+                            segments += 1
+                            in_segment = True
+                    else:
+                        if in_segment:
+                            longest_run = max(longest_run, current_run)
+                            current_run = 0
+                        in_segment = False
+                if in_segment:
+                    longest_run = max(longest_run, current_run)
+
+                coverage = opaque_pixels / max(width, 1)
+                is_text_like = (
+                    coverage >= 0.04
+                    and coverage <= 0.35
+                    and segments >= 6
+                    and longest_run <= int(width * 0.18)
+                )
+                if is_text_like:
+                    rows_to_clear.append(y)
+
+            contiguous_rows = 0
+            for index, row in enumerate(rows_to_clear):
+                if index == 0 or row == rows_to_clear[index - 1] + 1:
+                    contiguous_rows += 1
+                else:
+                    contiguous_rows = 1
+                if contiguous_rows >= 3:
+                    for clear_row in range(row - contiguous_rows + 1, row + 1):
+                        for x in range(width):
+                            cleaned_pixels[x, clear_row] = (0, 0, 0, 0)
 
             buffer = BytesIO()
             cleaned.save(buffer, format="PNG")

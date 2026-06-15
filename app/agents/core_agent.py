@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from app.schemas.response import CoreProductResponse, VisionResponse
+from app.services.gemini_service import GeminiService, GeminiServiceError
 from app.services.openai_service import OpenAIService, OpenAIServiceError
-from app.services.ollama_service import OllamaService, OllamaServiceError
 from app.utils.product_text import build_category, infer_product_type, normalize_title, sentence_case_summary, title_keywords, unique_strings
 
 
@@ -30,14 +30,26 @@ class CoreAgent:
 
     def __init__(
         self,
-        ollama_service: OllamaService | None = None,
         openai_service: OpenAIService | None = None,
+        gemini_service: GeminiService | None = None,
     ) -> None:
-        self.ollama_service = ollama_service
         self.openai_service = openai_service
+        self.gemini_service = gemini_service
 
     async def process(self, title: str, vision_data: VisionResponse) -> CoreProductResponse:
         fallback = self._build_fallback(title, vision_data)
+        provider = "fallback"
+        if self.gemini_service is not None:
+            try:
+                data = await self.gemini_service.generate_structured_output(
+                    system_prompt=self._build_openai_system_prompt(),
+                    user_payload=self._build_user_payload(title, vision_data),
+                    schema=self._SCHEMA,
+                )
+                provider = self.gemini_service.model
+                return self._response_from_data(data, fallback, title, vision_data, provider)
+            except GeminiServiceError:
+                pass
         if self.openai_service is not None:
             try:
                 data = await self.openai_service.generate_structured_output(
@@ -46,20 +58,12 @@ class CoreAgent:
                     schema_name="core_product",
                     schema=self._SCHEMA,
                 )
-                return self._response_from_data(data, fallback, title, vision_data)
+                provider = self.openai_service.model
+                return self._response_from_data(data, fallback, title, vision_data, provider)
             except OpenAIServiceError:
                 pass
 
-        if self.ollama_service is None:
-            return fallback
-
-        prompt = self._build_prompt(title, vision_data)
-        try:
-            result = await self.ollama_service.generate_json(prompt=prompt)
-        except OllamaServiceError:
-            return fallback
-
-        return self._response_from_data(result.parsed, fallback, title, vision_data)
+        return fallback
 
     def _response_from_data(
         self,
@@ -67,12 +71,12 @@ class CoreAgent:
         fallback: CoreProductResponse,
         title: str,
         vision_data: VisionResponse,
+        model_name: str,
     ) -> CoreProductResponse:
         from datetime import datetime, UTC
         from app.schemas.response import AgentAuditMetadata
-        model_name = self.openai_service.model if self.openai_service and self.openai_service.enabled else "ollama"
         audit_meta = AgentAuditMetadata(
-            prompt_version="core.v3",
+            prompt_version="core.v4",
             model_version=model_name,
             timestamp=datetime.now(UTC).isoformat(),
             validation_passed=True,
@@ -123,19 +127,6 @@ class CoreAgent:
             "vision_attributes": [item.model_dump() for item in vision_data.attributes],
             "image_analysis": vision_data.image_analysis.model_dump(),
         }
-
-    @staticmethod
-    def _build_prompt(title: str, vision_data: VisionResponse) -> str:
-        from app.utils.prompts import PromptRegistry
-        system_prompt = PromptRegistry.get_core_prompt()
-        return (
-            f"{system_prompt}\n\n"
-            f"Input title: {title}\n"
-            f"Vision product_type: {vision_data.product_type}\n"
-            f"Vision confidence: {vision_data.confidence}\n"
-            f"Vision attributes: {[item.model_dump() for item in vision_data.attributes]}\n"
-            f"Image analysis: {vision_data.image_analysis.model_dump()}\n"
-        )
 
     @staticmethod
     def _merge_attributes(vision_data: VisionResponse) -> dict[str, str]:

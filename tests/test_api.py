@@ -249,7 +249,7 @@ async def test_pricing_snapshot_endpoint_returns_market_ranges(monkeypatch, tmp_
     assert len(body["markets"]) == 5
     assert {entry["marketplace"] for entry in body["markets"]} == {"amazon", "ebay", "etsy", "tiktok", "shopify"}
     for entry in body["markets"]:
-        assert entry["source_mode"] in {"live_api", "cross_market_live_reference", "gemini_search", "ai_estimate", "estimated_range", "insufficient_data"}
+        assert entry["source_mode"] in {"gemini_search", "insufficient_data"}
         if entry["suggested_price_range"] is None:
             assert entry["source_mode"] == "insufficient_data"
             assert entry["recommended_price"] is None

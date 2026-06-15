@@ -11,6 +11,7 @@ from app.schemas.response import (
     ShopifyResponse,
     TikTokResponse,
 )
+from app.services.gemini_service import GeminiService, GeminiServiceError
 from app.services.openai_service import OpenAIService, OpenAIServiceError
 from app.utils.prompts import PromptRegistry
 from app.utils.product_text import sentence_case_summary, title_keywords, unique_strings
@@ -117,8 +118,13 @@ class ProductOptimizationAgent:
         },
     }
 
-    def __init__(self, openai_service: OpenAIService | None = None) -> None:
+    def __init__(
+        self,
+        openai_service: OpenAIService | None = None,
+        gemini_service: GeminiService | None = None,
+    ) -> None:
         self.openai_service = openai_service
+        self.gemini_service = gemini_service
 
     async def process(
         self,
@@ -136,12 +142,28 @@ class ProductOptimizationAgent:
             marketplaces=marketplaces,
             optimize_core=optimize_core,
         )
+        if self.gemini_service is not None:
+            try:
+                return await self.gemini_service.generate_structured_output(
+                    system_prompt=PromptRegistry.get_optimization_prompt(),
+                    user_payload={
+                        "current_product": product.model_dump(exclude={"images", "intelligence"}),
+                        "research": research.model_dump(),
+                        "seo": seo.model_dump(),
+                        "marketplaces": marketplaces or ["amazon", "ebay", "tiktok", "shopify"],
+                        "optimize_core": optimize_core,
+                    },
+                    use_google_search=True,
+                    schema=self._SCHEMA,
+                )
+            except GeminiServiceError:
+                pass
         if self.openai_service is None:
             return fallback
 
         try:
             return await self.openai_service.generate_structured_output(
-                    system_prompt=PromptRegistry.get_optimization_prompt(),
+                system_prompt=PromptRegistry.get_optimization_prompt(),
                 user_payload={
                     "current_product": product.model_dump(exclude={"images", "intelligence"}),
                     "research": research.model_dump(),

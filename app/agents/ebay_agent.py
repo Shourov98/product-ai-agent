@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from app.schemas.response import CoreProductResponse, EbayResponse, MarketplaceResearchResponse, SeoInsightsResponse
+from app.services.gemini_service import GeminiService, GeminiServiceError
 from app.services.openai_service import OpenAIService, OpenAIServiceError
-from app.services.ollama_service import OllamaService, OllamaServiceError
 from app.utils.prompts import PromptRegistry
 from app.utils.product_text import unique_strings
 
@@ -23,11 +23,11 @@ class EbayAgent:
 
     def __init__(
         self,
-        ollama_service: OllamaService | None = None,
         openai_service: OpenAIService | None = None,
+        gemini_service: GeminiService | None = None,
     ) -> None:
-        self.ollama_service = ollama_service
         self.openai_service = openai_service
+        self.gemini_service = gemini_service
 
     async def process(
         self,
@@ -42,6 +42,21 @@ class EbayAgent:
             condition=self._map_condition(core_data),
             listing_notes=self._build_listing_notes(core_data),
         )
+        if self.gemini_service is not None:
+            try:
+                data = await self.gemini_service.generate_structured_output(
+                    system_prompt=PromptRegistry.get_copy_prompt("ebay"),
+                    user_payload={
+                        "core_product": core_data.model_dump(),
+                        "research": research.model_dump() if research is not None else None,
+                        "seo": seo.model_dump() if seo is not None else None,
+                    },
+                    use_google_search=True,
+                    schema=self._SCHEMA,
+                )
+                return self._from_data(data, fallback, self.gemini_service.model)
+            except GeminiServiceError:
+                pass
         if self.openai_service is not None:
             try:
                 data = await self.openai_service.generate_structured_output(
@@ -54,30 +69,15 @@ class EbayAgent:
                     schema_name="ebay_listing",
                     schema=self._SCHEMA,
                 )
-                return self._from_data(data, fallback)
+                return self._from_data(data, fallback, self.openai_service.model)
             except OpenAIServiceError:
                 pass
 
-        if self.ollama_service is None:
-            return fallback
+        return fallback
 
-        prompt = (
-            "You are a senior eBay listing agent. Return only valid JSON with keys title, "
-            "item_specifics, condition, listing_notes.\n"
-            "Do not mention AI, confidence, normalization, or internal processing.\n"
-            f"Core product: {core_data.model_dump()}\n"
-        )
-        try:
-            result = await self.ollama_service.generate_json(prompt=prompt)
-        except OllamaServiceError:
-            return fallback
-
-        return self._from_data(result.parsed, fallback)
-
-    def _from_data(self, data: dict[str, object], fallback: EbayResponse) -> EbayResponse:
+    def _from_data(self, data: dict[str, object], fallback: EbayResponse, model_name: str) -> EbayResponse:
         from datetime import datetime, UTC
         from app.schemas.response import AgentAuditMetadata
-        model_name = self.openai_service.model if self.openai_service and self.openai_service.enabled else "ollama"
         audit_meta = AgentAuditMetadata(
             prompt_version="ebay-copy.v2",
             model_version=model_name,
