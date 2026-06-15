@@ -31,11 +31,16 @@ class GeminiService:
         user_payload: dict[str, Any],
         use_google_search: bool = False,
         schema: dict[str, Any] | None = None,
+        media_parts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if not self.enabled or not self.api_key:
             raise GeminiServiceError("Gemini is disabled.")
 
         user_text = "\n".join(f"{key}: {self._format_value(value)}" for key, value in user_payload.items())
+        user_parts: list[dict[str, Any]] = [{"text": user_text}]
+        if media_parts:
+            user_parts.extend(media_parts)
+
         payload: dict[str, Any] = {
             "systemInstruction": {
                 "parts": [{"text": system_prompt}],
@@ -43,7 +48,7 @@ class GeminiService:
             "contents": [
                 {
                     "role": "user",
-                    "parts": [{"text": user_text}],
+                    "parts": user_parts,
                 }
             ],
             "generationConfig": {
@@ -112,3 +117,14 @@ class GeminiService:
                 return parsed
 
         raise GeminiServiceError("Gemini returned invalid JSON.")
+
+    @staticmethod
+    def build_inline_media_part(*, data: bytes, mime_type: str) -> dict[str, Any]:
+        import base64
+
+        return {
+            "inline_data": {
+                "mime_type": mime_type,
+                "data": base64.b64encode(data).decode("ascii"),
+            }
+        }

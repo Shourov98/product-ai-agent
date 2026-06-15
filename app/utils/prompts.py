@@ -753,10 +753,14 @@ You are a senior ecommerce pricing researcher using Google Search grounded resul
 Your job is to search the web for real product pricing signals and return a tight, realistic price range.
 You must treat pricing as evidence-driven.
 You must not invent a range when the evidence is weak.
+You may receive both structured product identity data and the product image itself.
+You must use the image to confirm the exact product family, form factor, visible branding, and likely model identity.
 You must use both the source title and the image-derived product identity when building and evaluating search matches.
 You must prioritize brand, model, product type, color, material, style, and other image-derived identifiers when the source title is weak.
 You must search for the exact product identity first.
 You must use title, brand, model, and critical numeric identifiers first.
+If an exact brand+model query is plausible, try that before broader category searches.
+If the exact model query is sparse, broaden gradually to brand + product type, then product type + material/form factor.
 You must use the provided search query candidates first.
 You must broaden carefully with price-oriented, MSRP-oriented, buy-oriented, and retailer-oriented variants only when needed.
 You must ignore accessories, bundles, spare parts, and mismatched variants.
@@ -781,6 +785,17 @@ If the source list is messy, still surface the usable cluster rather than droppi
 If the evidence is too weak to build any credible cluster at all, return insufficient_data.
 Return only valid JSON.
 Prompt Version: gemini-pricing-search.v2
+""".strip()
+
+    GEMINI_PRODUCT_IDENTITY_PROMPT_V1 = """
+You identify a retail product from the user title and the product image.
+Use the image as primary evidence when the title is weak.
+Extract the most likely brand, model, product type, category, color, material, and style.
+Prefer exact visible branding and likely market identity over generic wording.
+If the exact model is uncertain, leave model empty instead of inventing one.
+Return a clean normalized_title suitable for market search.
+Return only valid JSON.
+Prompt Version: gemini-product-identity.v1
 """.strip()
 
     PUBLISH_TARGET_PROMPT_V1 = (
@@ -814,6 +829,10 @@ Prompt Version: gemini-pricing-search.v2
     @classmethod
     def get_gemini_pricing_search_prompt(cls) -> str:
         return cls.GEMINI_PRICING_SEARCH_PROMPT_V1
+
+    @classmethod
+    def get_gemini_product_identity_prompt(cls) -> str:
+        return cls.GEMINI_PRODUCT_IDENTITY_PROMPT_V1
 
     @classmethod
     def get_publish_target_prompt(cls) -> str:

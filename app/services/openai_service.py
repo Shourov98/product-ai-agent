@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -75,6 +76,69 @@ class OpenAIService:
 
         return parsed
 
+    async def generate_structured_output_with_web_search(
+        self,
+        *,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        schema_name: str,
+        schema: dict[str, Any],
+        image_bytes: bytes | None = None,
+        image_mime_type: str | None = None,
+    ) -> dict[str, Any]:
+        if not self.enabled or self.client is None:
+            raise OpenAIServiceError("OpenAI is disabled.")
+
+        import json
+
+        def _format_value(value: Any) -> str:
+            if isinstance(value, (dict, list, tuple)):
+                return json.dumps(value, ensure_ascii=False)
+            return str(value)
+
+        user_lines = [f"{key}: {_format_value(value)}" for key, value in user_payload.items()]
+        user_content: list[dict[str, Any]] = [{"type": "input_text", "text": "\n".join(user_lines)}]
+        if image_bytes and image_mime_type:
+            data_url = f"data:{image_mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+            user_content.append({"type": "input_image", "image_url": data_url, "detail": "high"})
+
+        tools_to_try: list[list[dict[str, Any]]] = [
+            [{"type": "web_search", "search_context_size": "high"}],
+            [{"type": "web_search_preview", "search_context_size": "high", "search_content_types": ["text"]}],
+        ]
+
+        last_error: Exception | None = None
+        for tools in tools_to_try:
+            try:
+                response = await self.client.responses.create(
+                    model=self.model,
+                    input=[
+                        {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+                        {"role": "user", "content": user_content},
+                    ],
+                    tools=tools,
+                    text={
+                        "format": {
+                            "type": "json_schema",
+                            "name": schema_name,
+                            "schema": schema,
+                            "strict": False,
+                        }
+                    },
+                )
+                output_text = (response.output_text or "").strip()
+                if not output_text:
+                    raise OpenAIServiceError("OpenAI web search returned an empty structured response.")
+                parsed = json.loads(output_text)
+                if not isinstance(parsed, dict):
+                    raise OpenAIServiceError("OpenAI web search returned a non-object JSON payload.")
+                return parsed
+            except Exception as exc:  # pragma: no cover - network/provider failures
+                last_error = exc
+                continue
+
+        raise OpenAIServiceError(str(last_error) if last_error is not None else "OpenAI web search request failed.")
+
     async def edit_image(
         self,
         *,
@@ -121,7 +185,6 @@ class OpenAIService:
         if not self.enabled or self.client is None:
             raise OpenAIServiceError("OpenAI is disabled.")
 
-        import base64
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
         try:
             response = await self.client.chat.completions.create(

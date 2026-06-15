@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import logging
 import re
-from datetime import UTC, datetime
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from statistics import mean, median
-from urllib.parse import quote, urlsplit, urlunsplit
 from statistics import mean, median
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import urlopen
@@ -43,7 +38,6 @@ from app.schemas.response import (
     IntelligenceLayerResponse,
     MarketplaceLiteral,
     MarketplacePricingSnapshotResponse,
-    MarketplacePricingSnapshotResponse,
     MarketplaceResearchResponse,
     MarketResearchBundleResponse,
     MarketplaceVariantsResponse,
@@ -51,13 +45,10 @@ from app.schemas.response import (
     PipelineValidationResponse,
     ProductPricingSnapshotResponse,
     DynamicPricingQueryResponse,
-    ProductPricingSnapshotResponse,
-    DynamicPricingQueryResponse,
     ProductListItemResponse,
     ProductPipelineResponse,
     ProductRecordResponse,
     ProductVariantResponse,
-    ResearchEvidenceResponse,
     ResearchEvidenceResponse,
     SectionValidationResponse,
     SeoInsightsResponse,
@@ -66,23 +57,17 @@ from app.schemas.response import (
     TikTokResponse,
 )
 from app.services.gemini_service import GeminiServiceError
-from app.services.gemini_service import GeminiServiceError
 from app.services.image_service import ImagePayload
-from app.services.publish_target_job_store import PublishTargetJobStore
 from app.services.mongo_product_store import MongoProductStore
+from app.services.openai_service import OpenAIServiceError
 from app.services.output_service import OutputService
 from app.services.product_store import ProductStore
 from app.services.s3_service import S3Service
-from app.services.s3_service import S3Service
 from app.utils.prompts import PromptRegistry
-from app.utils.product_text import best_model_term, build_category, infer_product_type, normalize_title, title_keywords, unique_strings
-
-
-logger = logging.getLogger(__name__)
+from app.utils.product_text import title_keywords, unique_strings
 
 
 class ProductService:
-    _GEMINI_PRICING_SCHEMA = {
     _GEMINI_PRICING_SCHEMA = {
         "type": "object",
         "properties": {
@@ -113,32 +98,20 @@ class ProductService:
         },
         "required": ["status"],
         "additionalProperties": False,
-            "status": {"type": "string", "enum": ["ok", "insufficient_data"]},
-            "minimum": {"type": "number"},
-            "maximum": {"type": "number"},
-            "recommended": {"type": "number"},
-            "currency": {"type": "string"},
-            "market_signal": {"type": "string"},
-            "analysis_summary": {"type": "string"},
-            "search_queries": {"type": "array", "items": {"type": "string"}},
-            "comparable_count": {"type": "integer"},
-            "price_sources": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "source": {"type": "string"},
-                        "title": {"type": "string"},
-                        "url": {"type": "string"},
-                        "price": {"type": "number"},
-                        "currency": {"type": "string"},
-                    },
-                    "required": ["source", "title"],
-                    "additionalProperties": False,
-                },
-            },
+    }
+    _GEMINI_IDENTITY_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "normalized_title": {"type": "string"},
+            "brand": {"type": "string"},
+            "model": {"type": "string"},
+            "product_type": {"type": "string"},
+            "category": {"type": "string"},
+            "color": {"type": "string"},
+            "material": {"type": "string"},
+            "style": {"type": "string"},
         },
-        "required": ["status"],
+        "required": ["normalized_title", "brand", "model", "product_type", "category", "color", "material", "style"],
         "additionalProperties": False,
     }
 
@@ -173,12 +146,6 @@ class ProductService:
                 access_key_id=settings.aws_access_key_id,
                 secret_access_key=settings.aws_secret_access_key,
                 prefix=settings.aws_s3_prefix,
-            s3_service=S3Service(
-                region=settings.aws_region,
-                bucket_name=settings.aws_s3_bucket,
-                access_key_id=settings.aws_access_key_id,
-                secret_access_key=settings.aws_secret_access_key,
-                prefix=settings.aws_s3_prefix,
             ),
             local_output_enabled=settings.local_output_enabled,
         )
@@ -186,21 +153,15 @@ class ProductService:
         self.image_agent = self._shared_image_agent or ImageAgent(self.pipeline.openai_service)
         self.__class__._shared_image_agent = self.image_agent
         self.amazon_agent = self._shared_amazon_agent or AmazonAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
-        self.amazon_agent = self._shared_amazon_agent or AmazonAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.__class__._shared_amazon_agent = self.amazon_agent
-        self.ebay_agent = self._shared_ebay_agent or EbayAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.ebay_agent = self._shared_ebay_agent or EbayAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.__class__._shared_ebay_agent = self.ebay_agent
         self.etsy_agent = self._shared_etsy_agent or EtsyAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
-        self.etsy_agent = self._shared_etsy_agent or EtsyAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.__class__._shared_etsy_agent = self.etsy_agent
-        self.tiktok_agent = self._shared_tiktok_agent or TikTokAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.tiktok_agent = self._shared_tiktok_agent or TikTokAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.__class__._shared_tiktok_agent = self.tiktok_agent
         self.shopify_agent = self._shared_shopify_agent or ShopifyAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
-        self.shopify_agent = self._shared_shopify_agent or ShopifyAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.__class__._shared_shopify_agent = self.shopify_agent
-        self.optimization_agent = self._shared_optimization_agent or ProductOptimizationAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.optimization_agent = self._shared_optimization_agent or ProductOptimizationAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.__class__._shared_optimization_agent = self.optimization_agent
 
@@ -233,8 +194,8 @@ class ProductService:
                     products_collection=settings.mongodb_products_collection,
                     imports_collection=settings.mongodb_imports_collection,
                 )
-            except Exception as exc:
-                logger.warning("Mongo store unavailable, falling back to local product store: %s", exc)
+            except Exception:
+                pass
         return ProductStore(settings.output_dir)
 
     async def generate_text_only(
@@ -248,42 +209,11 @@ class ProductService:
             title=title,
             image_marketplaces=[],
         )
-        result = await self._build_generated_product(
-            image=image,
-            title=title,
-            image_marketplaces=[],
-        )
         record = ProductRecordResponse(
             id=self._new_id(),
             status="draft",
             created_at=self._timestamp(),
             updated_at=self._timestamp(),
-            run_id=result["run_id"],
-            product=result["product"],
-            variants=MarketplaceVariantsResponse(),
-        )
-        self.store.save(record, user_id=current_user.user_id if current_user is not None else None)
-        return record
-
-    async def generate_marketplace_draft(
-        self,
-        image: ImagePayload,
-        title: str,
-        marketplace: MarketplaceLiteral,
-        current_user: AuthenticatedUser | None = None,
-    ) -> ProductRecordResponse:
-        result = await self._build_generated_product(
-            image=image,
-            title=title,
-            image_marketplaces=[marketplace],
-        )
-        record = ProductRecordResponse(
-            id=self._new_id(),
-            status="draft",
-            created_at=self._timestamp(),
-            updated_at=self._timestamp(),
-            run_id=result["run_id"],
-            product=result["product"],
             run_id=result["run_id"],
             product=result["product"],
             variants=MarketplaceVariantsResponse(),
@@ -460,15 +390,6 @@ class ProductService:
                 }.items()
                 if value
             },
-            category=category or "",
-            metafields={
-                key: value
-                for key, value in {
-                    "color": color.title() if color else "",
-                    "footwear_material": material.title() if material else "",
-                }.items()
-                if value
-            },
         )
         return ProductPipelineResponse(
             core=core,
@@ -610,20 +531,6 @@ class ProductService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found.")
         del record
 
-    def delete_product(
-        self,
-        product_id: str,
-        current_user: AuthenticatedUser | None = None,
-    ) -> None:
-        record = self.get_product(product_id, current_user=current_user)
-        user_id = current_user.user_id if current_user is not None else None
-        deleted = False
-        if hasattr(self.store, "delete"):
-            deleted = bool(self.store.delete(product_id, user_id=user_id))  # type: ignore[attr-defined]
-        if not deleted:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found.")
-        del record
-
     async def optimize_product(
         self,
         product_id: str,
@@ -631,11 +538,6 @@ class ProductService:
         current_user: AuthenticatedUser | None = None,
     ) -> ProductRecordResponse:
         record = self.get_product(product_id, current_user=current_user)
-        current_core = record.product.core
-        research = await self.pipeline.research.build_research_bundle(current_core)
-        current_core = await self._seed_default_core_price(current_core, research)
-        current_product = record.product.model_copy(update={"core": current_core})
-        seo = await self.pipeline.seo.process(current_core, research)
         current_core = record.product.core
         research = await self.pipeline.research.build_research_bundle(current_core)
         current_core = await self._seed_default_core_price(current_core, research)
@@ -716,24 +618,10 @@ class ProductService:
         marketplaces: list[MarketplaceLiteral],
         current_user: AuthenticatedUser | None = None,
     ) -> ProductRecordResponse:
-        return await self.generate_product_images(
-            product_id,
-            marketplaces=[marketplace],
-            current_user=current_user,
-        )
-
-    async def generate_product_images(
-        self,
-        product_id: str,
-        *,
-        marketplaces: list[MarketplaceLiteral],
-        current_user: AuthenticatedUser | None = None,
-    ) -> ProductRecordResponse:
         record = self.get_product(product_id, current_user=current_user)
         source_image = self._load_source_image(record)
         core = record.product.core
         research = await self.pipeline.research.build_research_bundle(core)
-        core = await self._seed_default_core_price(core, research)
         core = await self._seed_default_core_price(core, research)
         seo = await self.pipeline.seo.process(core, research)
         amazon = record.product.amazon
@@ -752,20 +640,8 @@ class ProductService:
             tiktok = text_content["tiktok"]
         if "shopify" in marketplaces:
             shopify = text_content["shopify"]
-        text_content = await self._generate_marketplace_content(core=core, research=research, seo=seo)
-        if "amazon" in marketplaces:
-            amazon = text_content["amazon"]
-        if "ebay" in marketplaces:
-            ebay = text_content["ebay"]
-        if "etsy" in marketplaces:
-            etsy = text_content["etsy"]
-        if "tiktok" in marketplaces:
-            tiktok = text_content["tiktok"]
-        if "shopify" in marketplaces:
-            shopify = text_content["shopify"]
 
         product_dir = self.store.get_product_dir(record.id)
-        generated_images = await self._generate_marketplace_images(
         generated_images = await self._generate_marketplace_images(
             source=source_image,
             existing_images=record.product.images,
@@ -776,19 +652,7 @@ class ProductService:
             tiktok_data=tiktok,
             shopify_data=shopify,
             marketplaces=marketplaces,
-            marketplaces=marketplaces,
             run_dir=product_dir,
-        )
-        latest_record = self.get_product(product_id, current_user=current_user)
-        latest_product = latest_record.product
-        images = latest_product.images.model_copy(
-            update={marketplace: getattr(generated_images, marketplace) for marketplace in marketplaces}
-        )
-        merged_amazon = amazon if "amazon" in marketplaces else latest_product.amazon
-        merged_ebay = ebay if "ebay" in marketplaces else latest_product.ebay
-        merged_etsy = etsy if "etsy" in marketplaces else latest_product.etsy
-        merged_tiktok = tiktok if "tiktok" in marketplaces else latest_product.tiktok
-        merged_shopify = shopify if "shopify" in marketplaces else latest_product.shopify
         )
         latest_record = self.get_product(product_id, current_user=current_user)
         latest_product = latest_record.product
@@ -807,21 +671,10 @@ class ProductService:
             etsy=merged_etsy,
             tiktok=merged_tiktok,
             shopify=merged_shopify,
-            core=latest_product.core,
-            amazon=merged_amazon,
-            ebay=merged_ebay,
-            etsy=merged_etsy,
-            tiktok=merged_tiktok,
-            shopify=merged_shopify,
             images=images,
         )
         product = ProductPipelineResponse(
             core=core,
-            amazon=merged_amazon,
-            ebay=merged_ebay,
-            etsy=merged_etsy,
-            tiktok=merged_tiktok,
-            shopify=merged_shopify,
             amazon=merged_amazon,
             ebay=merged_ebay,
             etsy=merged_etsy,
@@ -834,7 +687,6 @@ class ProductService:
                 "validation": validation,
             },
         )
-        updated = latest_record.model_copy(update={"product": product, "updated_at": self._timestamp()})
         updated = latest_record.model_copy(update={"product": product, "updated_at": self._timestamp()})
         self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
@@ -979,37 +831,31 @@ class ProductService:
         current_user: AuthenticatedUser | None = None,
     ) -> ProductPricingSnapshotResponse:
         record = self.get_product(product_id, current_user=current_user)
-        research = await self.pipeline.research.build_research_bundle(record.product.core)
-        selected_research = self._research_for_marketplace(research, marketplace)
-        fallback = self._build_publish_target_analysis(record, marketplace, selected_research)
-
-        openai_service = self.pipeline.openai_service
-        if openai_service is None or not openai_service.enabled:
-            return fallback
-
-        try:
-            data = await openai_service.generate_structured_output(
-                system_prompt=PromptRegistry.get_publish_target_prompt(),
-                user_payload={
-                    "marketplace": marketplace,
-                    "product_identity": {
-                        "normalized_title": record.product.core.normalized_title,
-                        "source_title": record.product.core.source_title,
-                        "category": record.product.core.category,
-                        "product_type": record.product.core.product_type,
-                        "product_summary": record.product.core.product_summary,
-                        "features": record.product.core.features,
-                        "attributes": record.product.core.attributes,
-                    },
-                    "product": record.product.model_dump(exclude={"images", "intelligence"}),
-                    "research": selected_research.model_dump(),
-                },
-                schema_name="publish_target_analysis",
-                schema=self._PUBLISH_TARGET_SCHEMA,
+        core = record.product.core
+        research = self._empty_pricing_research_bundle()
+        core = await self._seed_default_core_price(core, research)
+        if core != record.product.core:
+            updated_product = record.product.model_copy(update={"core": core})
+            record = record.model_copy(
+                update={
+                    "product": updated_product,
+                    "updated_at": self._timestamp(),
+                }
             )
-            return self._from_publish_target_data(data, fallback)
-        except Exception:
-            return fallback
+            self.store.save(record, user_id=current_user.user_id if current_user is not None else None)
+        markets = await asyncio.gather(
+            self._build_marketplace_pricing_snapshot("amazon", research.amazon, core, listing_title=record.product.amazon.title),
+            self._build_marketplace_pricing_snapshot("ebay", research.ebay, core, listing_title=record.product.ebay.title),
+            self._build_marketplace_pricing_snapshot("etsy", research.etsy, core, listing_title=record.product.etsy.title),
+            self._build_marketplace_pricing_snapshot("tiktok", research.tiktok, core, listing_title=record.product.tiktok.title),
+            self._build_marketplace_pricing_snapshot("shopify", research.shopify, core, listing_title=record.product.shopify.title),
+        )
+        timestamp = self._timestamp()
+        return ProductPricingSnapshotResponse(
+            product_id=record.id,
+            generated_at=timestamp,
+            markets=markets,
+        )
 
     async def query_product_pricing(
         self,
@@ -1018,16 +864,14 @@ class ProductService:
         image_payload: ImagePayload | None = None,
     ) -> DynamicPricingQueryResponse:
         core = self._build_query_core(product_name)
-        current_price = self._parse_price(core.attributes.get("price"))
         if image_payload is not None:
             try:
                 vision_data = await self.pipeline.vision.process(image_payload)
-                enriched_core = await self.pipeline.core.process(product_name, vision_data)
-                enriched_core = await self.pipeline.attribute_mapper.process(enriched_core, vision_data)
-                core = self._merge_query_core(core, enriched_core)
-                current_price = current_price or self._parse_price(core.attributes.get("price"))
-            except Exception as exc:
-                logger.warning("Image-enriched pricing query failed, falling back to text-only query core: %s", exc)
+                core = await self.pipeline.core.process(product_name, vision_data)
+                core = await self.pipeline.attribute_mapper.process(core, vision_data)
+            except Exception:
+                pass
+            core = await self._enrich_query_core_with_gemini_identity(product_name, image_payload, core)
         research = await self.pipeline.research.build_research_bundle(core)
         markets = [marketplace] if marketplace is not None else ["amazon", "ebay", "etsy", "tiktok", "shopify"]
         results = await asyncio.gather(
@@ -1037,7 +881,7 @@ class ProductService:
                     self._research_for_marketplace(research, market),
                     core,
                     listing_title=product_name,
-                    current_price=current_price,
+                    image_payload=image_payload,
                 )
                 for market in markets
             )
@@ -1048,39 +892,44 @@ class ProductService:
             markets=list(results),
         )
 
-    @staticmethod
-    def _merge_query_core(base: CoreProductResponse, enriched: CoreProductResponse) -> CoreProductResponse:
-        merged_attributes = dict(base.attributes)
-        merged_attributes.update({key: value for key, value in enriched.attributes.items() if value})
-        merged_features = unique_strings([*base.features, *enriched.features], limit=8)
-        return base.model_copy(
-            update={
-                "normalized_title": enriched.normalized_title or base.normalized_title,
-                "category": enriched.category or base.category,
-                "product_type": enriched.product_type or base.product_type,
-                "product_summary": enriched.product_summary or base.product_summary,
-                "features": merged_features or base.features,
-                "attributes": merged_attributes,
-                "source_title": enriched.source_title or base.source_title,
-                "vision_confidence": max(base.vision_confidence, enriched.vision_confidence),
-            }
-        )
-
     async def _build_marketplace_pricing_snapshot(
         self,
         marketplace: MarketplaceLiteral,
         research: MarketplaceResearchResponse,
         core: CoreProductResponse,
         listing_title: str = "",
-        current_price: float | None = None,
+        image_payload: ImagePayload | None = None,
     ) -> MarketplacePricingSnapshotResponse:
+        if getattr(self.pipeline.openai_service, "enabled", False):
+            openai_estimate = await self._build_openai_pricing_estimate(
+                marketplace,
+                research,
+                core,
+                listing_title=listing_title,
+                image_payload=image_payload,
+            )
+            if openai_estimate is not None:
+                suggested = openai_estimate["suggested_price_range"]
+                recommended = openai_estimate["recommended_price"]
+                return MarketplacePricingSnapshotResponse(
+                    marketplace=marketplace,
+                    source_mode="openai_web_search",
+                    search_queries=openai_estimate["search_queries"],
+                    comparable_count=openai_estimate["comparable_count"],
+                    recommended_price=recommended,
+                    currency=suggested.currency if suggested is not None else "USD",
+                    suggested_price_range=suggested,
+                    market_signal=openai_estimate["market_signal"],
+                    analysis_summary=openai_estimate["analysis_summary"],
+                    similar_listings=openai_estimate.get("similar_listings") or [],
+                )
         if self._gemini_search_enabled():
             gemini_estimate = await self._build_gemini_pricing_estimate(
                 marketplace,
                 research,
                 core,
                 listing_title=listing_title,
-                current_price=current_price,
+                image_payload=image_payload,
             )
             if gemini_estimate is not None:
                 suggested = gemini_estimate["suggested_price_range"]
@@ -1097,28 +946,22 @@ class ProductService:
                     analysis_summary=gemini_estimate["analysis_summary"],
                     similar_listings=gemini_estimate.get("similar_listings") or [],
                 )
-            live_suggested = self._suggested_price_for_marketplace(core, marketplace, research)
-            if live_suggested is not None:
-                live_recommended = self._default_price_from_band(live_suggested, research, core, marketplace) or live_suggested.recommended
+            heuristic_suggested = self._heuristic_price_for_marketplace(core, marketplace)
+            if heuristic_suggested is not None:
                 return MarketplacePricingSnapshotResponse(
                     marketplace=marketplace,
-                    source_mode=research.source_mode or "market_research",
+                    source_mode="heuristic_estimate",
                     search_queries=self._build_gemini_search_queries(core, marketplace, research, listing_title=listing_title),
-                    comparable_count=len(self._filtered_live_listing_prices(research, core)),
-                    recommended_price=live_recommended,
-                    currency=live_suggested.currency,
-                    suggested_price_range=live_suggested,
-                    market_signal=self._market_signal_for_marketplace(marketplace, research),
-                    analysis_summary=self._analysis_summary_for_marketplace(
-                        self._product_identity_label(core),
-                        marketplace,
-                        research,
-                        live_recommended,
-                        core.product_summary,
-                        pricing_mode=research.source_mode or "market_research",
-                        suggested_range=live_suggested,
+                    comparable_count=0,
+                    recommended_price=heuristic_suggested.recommended,
+                    currency=heuristic_suggested.currency,
+                    suggested_price_range=heuristic_suggested,
+                    market_signal=f"{marketplace.title()} heuristic estimate based on product type and material.",
+                    analysis_summary=(
+                        f"{self._product_identity_label(core)} on {marketplace.title()} does not have enough reliable search pricing data yet, "
+                        f"so a heuristic range is used for a similar {core.product_type.lower()} product."
                     ),
-                    similar_listings=research.similar_listings[:6],
+                    similar_listings=[],
                 )
             return MarketplacePricingSnapshotResponse(
                 marketplace=marketplace,
@@ -1150,6 +993,59 @@ class ProductService:
                 "does not have enough reliable pricing data yet."
             ),
             similar_listings=[],
+        )
+
+    @staticmethod
+    def _heuristic_price_for_marketplace(
+        core: CoreProductResponse,
+        marketplace: MarketplaceLiteral,
+    ) -> SuggestedPriceRangeResponse | None:
+        identity = " ".join(
+            [
+                core.normalized_title,
+                core.source_title,
+                core.category,
+                core.product_type,
+                core.product_summary,
+                " ".join(core.features),
+                " ".join(f"{k} {v}" for k, v in core.attributes.items()),
+            ]
+        ).lower()
+
+        base: tuple[float, float, float] | None = None
+        if any(token in identity for token in ("water bottle", "hydration bottle", "drink bottle")):
+            if "stainless steel" in identity or "metal" in identity:
+                base = (14.99, 24.99, 19.99)
+            elif "insulated" in identity or "vacuum" in identity:
+                base = (18.99, 32.99, 24.99)
+            else:
+                base = (9.99, 19.99, 14.99)
+        elif any(token in identity for token in ("tumbler", "travel mug", "coffee mug", "cup")):
+            if "stainless steel" in identity or "insulated" in identity:
+                base = (12.99, 26.99, 18.99)
+            else:
+                base = (7.99, 16.99, 11.99)
+
+        if base is None:
+            return None
+
+        minimum, maximum, recommended = base
+        marketplace_bias = {
+            "amazon": 1.0,
+            "ebay": 0.97,
+            "etsy": 1.08,
+            "tiktok": 0.95,
+            "shopify": 1.05,
+        }[marketplace]
+        minimum = round(minimum * marketplace_bias, 2)
+        maximum = round(maximum * marketplace_bias, 2)
+        recommended = round(recommended * marketplace_bias, 2)
+        return SuggestedPriceRangeResponse(
+            minimum=minimum,
+            maximum=maximum,
+            recommended=recommended,
+            currency="USD",
+            source="heuristic_estimate",
         )
 
     def add_size_variant(
@@ -1264,26 +1160,19 @@ class ProductService:
         research: MarketplaceResearchResponse,
         core: CoreProductResponse,
         listing_title: str = "",
-        current_price: float | None = None,
+        image_payload: ImagePayload | None = None,
     ) -> dict[str, Any] | None:
         base_payload = {
             "marketplace": marketplace,
             "product_identity": self._product_identity_label(core),
-            "model_analysis": {
-                "detected_model": best_model_term(core.normalized_title, core.source_title, core.product_summary, str(core.attributes.get("model") or core.attributes.get("model_number") or "")),
-                "model_text": str(core.attributes.get("model") or core.attributes.get("model_number") or "").strip(),
-                "model_candidates": unique_strings(
-                    [
-                        best_model_term(core.normalized_title, core.source_title, core.product_summary, str(core.attributes.get("model") or core.attributes.get("model_number") or "")),
-                        str(core.attributes.get("model") or core.attributes.get("model_number") or "").strip(),
-                        *title_keywords(core.normalized_title),
-                        *title_keywords(core.source_title),
-                    ],
-                    limit=8,
-                ),
+            "identity_signals": {
+                "brand": str(core.attributes.get("brand") or "").strip(),
+                "model": str(core.attributes.get("model") or core.attributes.get("model_number") or "").strip(),
+                "color": str(core.attributes.get("color") or "").strip(),
+                "material": str(core.attributes.get("material") or "").strip(),
+                "style": str(core.attributes.get("style") or "").strip(),
             },
             "generated_listing_title": listing_title.strip(),
-            "current_price": current_price,
             "source_title": core.source_title,
             "category": core.category,
             "product_type": core.product_type,
@@ -1303,6 +1192,14 @@ class ProductService:
                 "comparable_count": "integer",
             },
         }
+        media_parts = None
+        if image_payload is not None:
+            media_parts = [
+                self.pipeline.gemini_service.build_inline_media_part(
+                    data=image_payload.data,
+                    mime_type=image_payload.content_type or "application/octet-stream",
+                )
+            ]
         payload: dict[str, Any] | None = None
         for schema in (self._GEMINI_PRICING_SCHEMA, None):
             try:
@@ -1311,6 +1208,7 @@ class ProductService:
                     user_payload=base_payload,
                     use_google_search=True,
                     schema=schema,
+                    media_parts=media_parts,
                 )
             except GeminiServiceError:
                 continue
@@ -1369,6 +1267,169 @@ class ProductService:
             "similar_listings": similar_listings,
         }
 
+    async def _build_openai_pricing_estimate(
+        self,
+        marketplace: MarketplaceLiteral,
+        research: MarketplaceResearchResponse,
+        core: CoreProductResponse,
+        listing_title: str = "",
+        image_payload: ImagePayload | None = None,
+    ) -> dict[str, Any] | None:
+        openai_service = self.pipeline.openai_service
+        if openai_service is None or not openai_service.enabled:
+            return None
+
+        base_payload = {
+            "marketplace": marketplace,
+            "product_identity": self._product_identity_label(core),
+            "identity_signals": {
+                "brand": str(core.attributes.get("brand") or "").strip(),
+                "model": str(core.attributes.get("model") or core.attributes.get("model_number") or "").strip(),
+                "color": str(core.attributes.get("color") or "").strip(),
+                "material": str(core.attributes.get("material") or "").strip(),
+                "style": str(core.attributes.get("style") or "").strip(),
+            },
+            "generated_listing_title": listing_title.strip(),
+            "source_title": core.source_title,
+            "category": core.category,
+            "product_type": core.product_type,
+            "product_summary": core.product_summary,
+            "features": core.features,
+            "attributes": core.attributes,
+            "existing_search_queries": self._build_gemini_search_queries(core, marketplace, research, listing_title=listing_title),
+            "response_contract": {
+                "status": "ok or insufficient_data",
+                "minimum": "number",
+                "maximum": "number",
+                "recommended": "number",
+                "currency": "string",
+                "market_signal": "string",
+                "analysis_summary": "string",
+                "search_queries": ["string"],
+                "comparable_count": "integer",
+                "price_sources": [{"source": "string", "title": "string", "url": "string", "price": "number", "currency": "string"}],
+            },
+        }
+
+        try:
+            candidate = await openai_service.generate_structured_output_with_web_search(
+                system_prompt=PromptRegistry.get_gemini_pricing_search_prompt(),
+                user_payload=base_payload,
+                schema_name="openai_web_pricing_search",
+                schema=self._GEMINI_PRICING_SCHEMA,
+                image_bytes=image_payload.data if image_payload is not None else None,
+                image_mime_type=image_payload.content_type if image_payload is not None else None,
+            )
+        except OpenAIServiceError:
+            return None
+
+        payload = self._normalize_gemini_pricing_payload(candidate)
+        if payload is None:
+            return None
+
+        similar_listings = self._coerce_gemini_price_sources(payload.get("price_sources"))
+        minimum = self._parse_price(payload.get("minimum"))
+        maximum = self._parse_price(payload.get("maximum"))
+        recommended = self._parse_price(payload.get("recommended"))
+        comparable_count = int(self._parse_price(payload.get("comparable_count")) or 0)
+        suggested: SuggestedPriceRangeResponse | None = None
+        if minimum is not None and maximum is not None:
+            if maximum < minimum:
+                minimum, maximum = maximum, minimum
+            if recommended is None:
+                recommended = round((minimum + maximum) / 2, 2)
+            else:
+                recommended = min(max(recommended, minimum), maximum)
+            suggested = SuggestedPriceRangeResponse(
+                minimum=minimum,
+                maximum=maximum,
+                recommended=recommended,
+                currency=str(payload.get("currency") or "USD").strip() or "USD",
+                source="openai_web_search",
+            )
+        else:
+            suggested = self._pricing_range_from_sources(similar_listings, marketplace=marketplace)
+            if suggested is not None:
+                recommended = suggested.recommended
+        if suggested is None:
+            return None
+
+        search_queries = payload.get("search_queries")
+        if not isinstance(search_queries, list):
+            search_queries = self._build_gemini_search_queries(core, marketplace, research, listing_title=listing_title)
+        return {
+            "suggested_price_range": suggested,
+            "recommended_price": recommended,
+            "market_signal": str(payload.get("market_signal") or "").strip() or f"{marketplace.title()} OpenAI web search pricing",
+            "analysis_summary": str(payload.get("analysis_summary") or "").strip()
+            or self._analysis_summary_for_marketplace(
+                self._product_identity_label(core),
+                marketplace,
+                research,
+                recommended,
+                core.product_summary,
+                pricing_mode="openai_web_search",
+                suggested_range=suggested,
+            ),
+            "search_queries": [str(item).strip() for item in search_queries if str(item).strip()],
+            "comparable_count": max(0, comparable_count or len(similar_listings)),
+            "similar_listings": similar_listings,
+        }
+
+    async def _enrich_query_core_with_gemini_identity(
+        self,
+        product_name: str,
+        image_payload: ImagePayload,
+        fallback_core: CoreProductResponse,
+    ) -> CoreProductResponse:
+        if not self._gemini_search_enabled():
+            return fallback_core
+
+        try:
+            payload = await self.pipeline.gemini_service.generate_structured_output(
+                system_prompt=PromptRegistry.get_gemini_product_identity_prompt(),
+                user_payload={
+                    "user_title": product_name,
+                    "fallback_core": fallback_core.model_dump(),
+                },
+                schema=self._GEMINI_IDENTITY_SCHEMA,
+                media_parts=[
+                    self.pipeline.gemini_service.build_inline_media_part(
+                        data=image_payload.data,
+                        mime_type=image_payload.content_type or "application/octet-stream",
+                    )
+                ],
+            )
+        except GeminiServiceError:
+            return fallback_core
+
+        normalized_title = str(payload.get("normalized_title") or "").strip() or fallback_core.normalized_title
+        product_type = str(payload.get("product_type") or "").strip() or fallback_core.product_type
+        category = str(payload.get("category") or "").strip() or fallback_core.category
+        merged_attributes = dict(fallback_core.attributes)
+        for key in ("brand", "model", "color", "material", "style"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                merged_attributes[key] = value
+        features = unique_strings(
+            [
+                *fallback_core.features,
+                f"Image-identified product type: {product_type}." if product_type else "",
+                f"Detected brand: {merged_attributes.get('brand')}." if merged_attributes.get("brand") else "",
+                f"Detected model: {merged_attributes.get('model')}." if merged_attributes.get("model") else "",
+            ],
+            limit=8,
+        )
+        return fallback_core.model_copy(
+            update={
+                "normalized_title": normalized_title,
+                "product_type": product_type,
+                "category": category,
+                "attributes": merged_attributes,
+                "features": features or fallback_core.features,
+            }
+        )
+
     @staticmethod
     def _empty_pricing_research_bundle() -> MarketResearchBundleResponse:
         return MarketResearchBundleResponse(
@@ -1381,17 +1442,14 @@ class ProductService:
 
     @staticmethod
     def _build_query_core(product_name: str) -> CoreProductResponse:
-        normalized = normalize_title(product_name.strip())
+        normalized = product_name.strip()
         query_keywords = title_keywords(normalized)[:8]
-        product_type = infer_product_type(normalized)
-        category = build_category(product_type)
-        model_term = best_model_term(normalized)
+        category = query_keywords[0].title() if query_keywords else normalized or "query"
+        product_type = query_keywords[1].title() if len(query_keywords) > 1 else category
         attributes: dict[str, str] = {
             "query": normalized,
-            "query_keywords": " ".join(query_keywords),
+            "query_keywords": ", ".join(query_keywords),
         }
-        if model_term:
-            attributes["model"] = model_term
 
         return CoreProductResponse(
             normalized_title=normalized,
@@ -1500,7 +1558,7 @@ class ProductService:
             for source in sources
             if source.price is not None and source.price > 0
         )
-        if not prices:
+        if len(prices) < 2:
             return None
 
         observed_min = prices[0]
@@ -1516,14 +1574,9 @@ class ProductService:
             "shopify": 1.04,
         }[marketplace]
         recommended = round(max(0.01, ((observed_median + observed_mean) / 2) * marketplace_bias), 2)
-        if len(prices) == 1:
-            padding = max(recommended * 0.06, 5.0)
-            minimum = round(max(0.01, recommended - padding), 2)
-            maximum = round(recommended + padding, 2)
-        else:
-            padding = max(spread * 0.18, recommended * 0.06)
-            minimum = round(max(0.01, min(observed_min, recommended - padding)), 2)
-            maximum = round(max(observed_max, recommended + padding), 2)
+        padding = max(spread * 0.18, recommended * 0.06)
+        minimum = round(max(0.01, min(observed_min, recommended - padding)), 2)
+        maximum = round(max(observed_max, recommended + padding), 2)
         return SuggestedPriceRangeResponse(
             minimum=minimum,
             maximum=maximum,
@@ -1534,178 +1587,6 @@ class ProductService:
 
     def _gemini_search_enabled(self) -> bool:
         return bool(getattr(self.pipeline.gemini_service, "enabled", False))
-
-    @staticmethod
-    def _insufficient_pricing_signal(marketplace: MarketplaceLiteral, research: MarketplaceResearchResponse) -> str:
-        if research.search_queries:
-            return f"{marketplace.title()} pricing needs stronger matches for: {research.search_queries[0]}"
-        return f"{marketplace.title()} pricing data is insufficient right now."
-
-    @staticmethod
-    def _has_reliable_market_pricing(research: MarketplaceResearchResponse, core: CoreProductResponse | None = None) -> bool:
-        if research.source_mode != "live_api":
-            return False
-        listing_prices = ProductService._filtered_live_listing_prices(research, core)
-        return len(listing_prices) >= 2
-
-    @staticmethod
-    def _best_live_pricing_reference(
-        research: MarketResearchBundleResponse,
-        core: CoreProductResponse,
-    ) -> tuple[MarketplaceLiteral | None, MarketplaceResearchResponse | None]:
-        candidates: list[tuple[MarketplaceLiteral, MarketplaceResearchResponse]] = [
-            ("amazon", research.amazon),
-            ("ebay", research.ebay),
-            ("etsy", research.etsy),
-            ("tiktok", research.tiktok),
-            ("shopify", research.shopify),
-        ]
-        live_candidates = [
-            (marketplace, market_research)
-            for marketplace, market_research in candidates
-            if ProductService._has_reliable_market_pricing(market_research, core)
-        ]
-        if not live_candidates:
-            return None, None
-        live_candidates.sort(
-            key=lambda item: len(ProductService._filtered_live_listing_prices(item[1], core)),
-            reverse=True,
-        )
-        return live_candidates[0]
-
-    async def _build_gemini_pricing_estimate(
-    async def _seed_default_core_price(
-        self,
-        marketplace: MarketplaceLiteral,
-        research: MarketplaceResearchResponse,
-    ) -> PublishTargetAnalysisResponse:
-        core = record.product.core
-        product_label = self._product_identity_label(core)
-        vendor = self._publish_vendor_for_marketplace(record, marketplace)
-        sku = self._publish_sku_for_marketplace(record, marketplace)
-        description = self._publish_description_for_marketplace(record, marketplace)
-        suggested = self._suggested_price_for_marketplace(core, marketplace, research)
-        default_price = suggested.recommended if suggested is not None else self._fallback_default_price(core, marketplace)
-        market_signal = self._market_signal_for_marketplace(marketplace, research)
-        summary = self._analysis_summary_for_marketplace(product_label, marketplace, research, default_price)
-        return PublishTargetAnalysisResponse(
-            marketplace=marketplace,
-            vendor=vendor,
-            default_sku=sku,
-            default_price=f"{default_price:.2f}",
-            publish_description=description,
-            suggested_price_range=suggested,
-            market_signal=market_signal,
-            analysis_summary=summary,
-        )
-
-    def _from_publish_target_data(
-        self,
-        data: dict[str, object],
-        fallback: PublishTargetAnalysisResponse,
-    ) -> PublishTargetAnalysisResponse:
-        suggested = data.get("suggested_price_range")
-        if isinstance(suggested, dict):
-            range_payload: dict[str, object] | None = suggested
-        else:
-            range_payload = None
-
-        payload: dict[str, object] = {
-            "marketplace": str(data.get("marketplace", fallback.marketplace)),
-            "vendor": str(data.get("vendor", fallback.vendor)),
-            "default_sku": str(data.get("default_sku", fallback.default_sku)),
-            "default_price": str(data.get("default_price", fallback.default_price)),
-            "publish_description": str(data.get("publish_description", fallback.publish_description)),
-            "suggested_price_range": range_payload if range_payload is not None else fallback.suggested_price_range,
-            "market_signal": str(data.get("market_signal", fallback.market_signal)),
-            "analysis_summary": str(data.get("analysis_summary", fallback.analysis_summary)),
-        }
-        return PublishTargetAnalysisResponse.model_validate(payload)
-
-    @staticmethod
-    def _empty_pricing_research_bundle() -> MarketResearchBundleResponse:
-        return MarketResearchBundleResponse(
-            amazon=MarketplaceResearchResponse(marketplace="amazon"),
-            ebay=MarketplaceResearchResponse(marketplace="ebay"),
-            etsy=MarketplaceResearchResponse(marketplace="etsy"),
-            tiktok=MarketplaceResearchResponse(marketplace="tiktok"),
-            shopify=MarketplaceResearchResponse(marketplace="shopify"),
-        )
-
-    @staticmethod
-    def _build_query_core(product_name: str) -> CoreProductResponse:
-        normalized = product_name.strip()
-        query_keywords = title_keywords(normalized)[:8]
-        category = query_keywords[0].title() if query_keywords else normalized or "query"
-        product_type = query_keywords[1].title() if len(query_keywords) > 1 else category
-        attributes: dict[str, str] = {
-            "query": normalized,
-            "query_keywords": ", ".join(query_keywords),
-        }
-
-        return CoreProductResponse(
-            normalized_title=normalized,
-            category=category,
-            product_type=product_type,
-            product_summary=f"Dynamic pricing lookup for {normalized}.",
-            features=[
-                f"Query-driven pricing for {normalized}.",
-                f"Search keywords: {', '.join(query_keywords) if query_keywords else normalized}.",
-                "Uses live Google search evidence and ignores mismatched variants.",
-            ],
-            attributes=attributes,
-            source_title=normalized,
-            vision_confidence=0.0,
-        )
-
-    @staticmethod
-    def _default_price_from_band(
-        suggested: SuggestedPriceRangeResponse | None,
-        research: MarketplaceResearchResponse,
-        core: CoreProductResponse,
-        marketplace: MarketplaceLiteral,
-    ) -> float | None:
-        if suggested is None:
-            return None
-
-        minimum = suggested.minimum
-        maximum = suggested.maximum
-        recommended = suggested.recommended
-        if maximum <= minimum:
-            return round(recommended, 2)
-
-        identity = " ".join(
-            [
-                core.normalized_title,
-                core.source_title,
-                core.category,
-                core.product_type,
-                core.product_summary,
-                " ".join(core.features),
-            ]
-        ).lower()
-        is_high_value_electronics = any(
-            keyword in identity
-            for keyword in (
-                "playstation",
-                "ps5",
-                "xbox",
-                "nintendo switch",
-                "console",
-                "gaming",
-                "electronics",
-            )
-        )
-
-        anchor_ratio = 0.78 if is_high_value_electronics else 0.66
-        if research.source_mode == "live_api":
-            anchor_ratio = max(anchor_ratio, 0.76)
-        elif marketplace in {"amazon", "shopify"}:
-            anchor_ratio = max(anchor_ratio, 0.7)
-
-        strategic_price = minimum + ((maximum - minimum) * anchor_ratio)
-        strategic_price = max(strategic_price, recommended)
-        return round(min(maximum, strategic_price), 2)
 
     @staticmethod
     def _insufficient_pricing_signal(marketplace: MarketplaceLiteral, research: MarketplaceResearchResponse) -> str:
@@ -1926,61 +1807,50 @@ class ProductService:
     ) -> list[str]:
         brand = str(core.attributes.get("brand") or "").strip()
         model = str(core.attributes.get("model") or core.attributes.get("model_number") or "").strip()
-        model_term = best_model_term(core.normalized_title, core.source_title, core.product_summary, model)
         color = str(core.attributes.get("color") or "").strip()
         material = str(core.attributes.get("material") or "").strip()
         style = str(core.attributes.get("style") or "").strip()
-        query_keywords = str(core.attributes.get("query_keywords") or "").strip()
+        query_keywords = str(core.attributes.get("query_keywords") or "").replace(",", " ").strip()
         identity = ProductService._product_identity_label(core)
         title = core.source_title.strip() or identity
         current_listing_title = listing_title.strip()
-        query_keyword_terms = unique_strings(title_keywords(query_keywords.replace(",", " ")), limit=8)
-        identity_terms = unique_strings(
+        important_tokens = sorted(ProductService._important_identity_tokens(core))
+        compact_identity = " ".join(token.upper() if token in {"rtx", "gtx", "rx"} else token for token in important_tokens[:6]).strip()
+        concise_identity = " ".join(part for part in [brand, model, material, core.product_type] if part).strip()
+        generic_identity = " ".join(part for part in [material, core.product_type] if part).strip()
+        visual_identity = " ".join(part for part in [brand, model, color, material, style, core.product_type] if part).strip()
+        category_identity = " ".join(part for part in [brand, core.category, core.product_type, color, material] if part).strip()
+        query_identity = " ".join(part for part in [current_listing_title, concise_identity or generic_identity, title] if part).strip()
+
+        queries = unique_strings(
             [
-                identity,
-                title,
-                current_listing_title,
-                brand,
-                model,
-                model_term,
-                core.product_type,
-                core.category,
-                color,
-                material,
-                style,
-                *query_keyword_terms,
-            ],
+                f"{current_listing_title} price".strip(),
+                f"{current_listing_title} buy".strip(),
+                f"{concise_identity} price".strip(),
+                f"{concise_identity} buy".strip(),
+                f"{generic_identity} price".strip(),
+                f"{generic_identity} buy".strip(),
+                f"{query_identity} price".strip(),
+                f"{query_identity} buy".strip(),
+                f"{identity} price",
+                f"{title} price",
+                f"{identity} buy".strip(),
+                f"{identity} retail price".strip(),
+                f"{identity} store price".strip(),
+                f"{identity} Google Shopping".strip(),
+                f"{identity} MSRP".strip(),
+                f"{visual_identity} price".strip(),
+                f"{category_identity} price".strip(),
+                f"{brand} {model} price".strip(),
+                f"{brand} {compact_identity} price".strip(),
+                f"{identity} {marketplace} price".strip(),
+                f"{marketplace} {identity} price".strip(),
+                f"{identity} current price".strip(),
+            ]
+            + list(research.search_queries),
             limit=12,
         )
-        anchors = unique_strings(
-            [
-                " ".join(part for part in [brand, model, core.product_type] if part).strip(),
-                " ".join(part for part in [brand, model_term or model, core.product_type] if part).strip(),
-                " ".join(part for part in [title, core.category, material] if part).strip(),
-                " ".join(part for part in [current_listing_title, core.category, core.product_type] if part).strip(),
-                " ".join(part for part in [identity, marketplace] if part).strip(),
-                " ".join(part for part in [identity, core.product_type] if part).strip(),
-                " ".join(part for part in [brand, core.category, color, material] if part).strip(),
-            ]
-            + identity_terms,
-            limit=16,
-        )
-
-        prioritized_queries = [
-            f"{anchors[0]} price".strip() if anchors else "",
-            f"{anchors[0]} buy".strip() if anchors else "",
-            f"{anchors[0]} Google Shopping".strip() if anchors else "",
-            f"{anchors[1]} price".strip() if len(anchors) > 1 else "",
-            f"{anchors[1]} current price".strip() if len(anchors) > 1 else "",
-            f"{anchors[2]} price".strip() if len(anchors) > 2 else "",
-            f"{identity} price".strip(),
-            f"{title} price".strip(),
-        ]
-        if current_listing_title:
-            prioritized_queries.append(f"{current_listing_title} price".strip())
-        if research.search_queries:
-            prioritized_queries.extend(research.search_queries[:2])
-        return unique_strings([query for query in prioritized_queries if query.strip()], limit=8)
+        return [query for query in queries if query.strip()]
 
     @staticmethod
     def _market_signal_for_marketplace(marketplace: MarketplaceLiteral, research: MarketplaceResearchResponse) -> str:
@@ -1995,15 +1865,14 @@ class ProductService:
         product_label: str,
         marketplace: MarketplaceLiteral,
         research: MarketplaceResearchResponse,
-        default_price: float,
+        default_price: float | None,
         product_summary: str = "",
-        pricing_mode: str = "pricing analysis",
+        pricing_mode: str = "live_api",
         suggested_range: SuggestedPriceRangeResponse | None = None,
     ) -> str:
         if default_price is None:
             return (
-                f"{product_label} on {marketplace.title()} supports a default price around ${default_price:.2f} "
-                f"inside a ${research.price_min:.2f} to ${research.price_max:.2f} band."
+                f"{product_label} on {marketplace.title()} does not have enough reliable pricing evidence yet."
             )
         if pricing_mode == "live_api":
             source_label = "live market data"
@@ -2029,29 +1898,6 @@ class ProductService:
     def _product_identity_label(core: CoreProductResponse) -> str:
         label = core.normalized_title.strip() or core.source_title.strip() or "Product"
         return re.sub(r"\s+", " ", label).strip()
-
-    @staticmethod
-    def _merge_publish_target_core(
-        core: CoreProductResponse,
-        payload: object | None,
-    ) -> CoreProductResponse:
-        if payload is None:
-            return core
-
-        payload_dict = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else {}
-        updates: dict[str, object] = {}
-        for field in ("normalized_title", "source_title", "category", "product_type", "product_summary", "features", "attributes"):
-            value = payload_dict.get(field)
-            if value is not None:
-                updates[field] = value
-        if not updates:
-            return core
-        return core.model_copy(update=updates)
-
-    @staticmethod
-    def _coalesce_publish_field(preferred: object | None, fallback: str) -> str:
-        text = str(preferred).strip() if preferred is not None else ""
-        return text or fallback
 
     @staticmethod
     def _parse_price(value: object) -> float | None:
@@ -2271,10 +2117,7 @@ class ProductService:
         if source.absolute_path.startswith("http://") or source.absolute_path.startswith("https://"):
             remote_url = ProductService._safe_remote_url(source.absolute_path)
             with urlopen(remote_url, timeout=30) as response:
-            remote_url = ProductService._safe_remote_url(source.absolute_path)
-            with urlopen(remote_url, timeout=30) as response:
                 payload = response.read()
-            filename = Path(source.relative_path or Path(urlsplit(remote_url).path).name).name
             filename = Path(source.relative_path or Path(urlsplit(remote_url).path).name).name
             return ImagePayload(
                 filename=filename or "source.bin",
@@ -2300,4 +2143,3 @@ class ProductService:
         safe_path = quote(parts.path, safe="/%._-~")
         safe_query = quote(parts.query, safe="=&%._-~")
         return urlunsplit((parts.scheme, parts.netloc, safe_path, safe_query, parts.fragment))
-
