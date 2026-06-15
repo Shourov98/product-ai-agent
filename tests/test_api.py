@@ -48,6 +48,8 @@ async def test_generate_endpoint_returns_structured_response() -> None:
     assert "shopify" in body
     assert body["shopify"]["category"]
     assert body["shopify"]["metafields"]["age_group"]
+    assert body["shopify"]["category"]
+    assert body["shopify"]["metafields"]["age_group"]
     assert "images" in body
     assert "source" in body["images"]
     assert "amazon" in body["images"]
@@ -64,6 +66,7 @@ async def test_product_crud_variant_and_regeneration_flow(monkeypatch, tmp_path)
         base_url="http://testserver",
     ) as client:
         create_response = await client.post(
+            "/api/products/generate/text",
             "/api/products/generate/text",
             data={"title": "Pro Runner Sneaker"},
             files={

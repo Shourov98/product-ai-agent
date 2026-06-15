@@ -109,6 +109,8 @@ class ShopifyResponse(BaseModel):
     seo_description: str
     category: str = ""
     metafields: dict[str, str] = Field(default_factory=dict)
+    category: str = ""
+    metafields: dict[str, str] = Field(default_factory=dict)
     audit: AgentAuditMetadata | None = None
 
 
@@ -291,7 +293,13 @@ class SuggestedPriceRangeResponse(BaseModel):
 
 
 class MarketplacePricingSnapshotResponse(BaseModel):
+class MarketplacePricingSnapshotResponse(BaseModel):
     marketplace: MarketplaceLiteral
+    source_mode: str
+    search_queries: list[str] = Field(default_factory=list)
+    comparable_count: int = Field(ge=0)
+    recommended_price: float | None = Field(default=None, gt=0)
+    currency: str = "USD"
     source_mode: str
     search_queries: list[str] = Field(default_factory=list)
     comparable_count: int = Field(ge=0)

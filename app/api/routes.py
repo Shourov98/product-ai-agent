@@ -30,6 +30,7 @@ router = APIRouter()
 
 
 async def _read_image_payload(image: UploadFile) -> ImagePayload:
+async def _read_image_payload(image: UploadFile) -> ImagePayload:
     settings = get_settings()
     content = await image.read()
 
@@ -45,6 +46,7 @@ async def _read_image_payload(image: UploadFile) -> ImagePayload:
             detail="Image exceeds configured upload limit.",
         )
 
+    return ImagePayload(
     return ImagePayload(
         filename=image.filename or "upload.bin",
         content_type=image.content_type or "application/octet-stream",
@@ -139,9 +141,11 @@ async def generate_product_listing(
 
 @router.post(
     "/products/generate/text",
+    "/products/generate/text",
     response_model=ProductRecordResponse,
     status_code=status.HTTP_200_OK,
 )
+async def generate_text_only_product(
 async def generate_text_only_product(
     title: str = Form(...),
     image: UploadFile = File(...),
@@ -164,7 +168,25 @@ async def generate_single_marketplace_product(
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
 ) -> ProductRecordResponse:
     payload = await _read_image_payload(image)
+    payload = await _read_image_payload(image)
     service = ProductService()
+    return await service.generate_text_only(payload, title, current_user=current_user)
+
+
+@router.post(
+    "/products/generate/{marketplace}",
+    response_model=ProductRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def generate_single_marketplace_product(
+    marketplace: MarketplaceRequestLiteral,
+    title: str = Form(...),
+    image: UploadFile = File(...),
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ProductRecordResponse:
+    payload = await _read_image_payload(image)
+    service = ProductService()
+    return await service.generate_marketplace_draft(payload, title, marketplace, current_user=current_user)
     return await service.generate_marketplace_draft(payload, title, marketplace, current_user=current_user)
 
 
@@ -322,6 +344,7 @@ async def upload_product_import_as_product(
 ) -> UploadImportAsProductResponse:
     service = ImportService()
     return await service.upload_as_product(record_id, current_user=current_user)
+    return await service.upload_as_product(record_id, current_user=current_user)
 
 
 @router.get(
@@ -417,6 +440,19 @@ async def delete_product(
     return None
 
 
+@router.delete(
+    "/products/{product_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_product(
+    product_id: str,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+):
+    service = ProductService()
+    service.delete_product(product_id, current_user=current_user)
+    return None
+
+
 @router.post(
     "/products/{product_id}/source-image",
     response_model=ProductRecordResponse,
@@ -430,6 +466,7 @@ async def upload_product_source_image(
     service = ProductService()
     return await service.upload_source_image(
         product_id,
+        await _read_image_payload(image),
         await _read_image_payload(image),
         current_user=current_user,
     )
@@ -463,18 +500,18 @@ async def optimize_marketplace(
     return await service.optimize_marketplace(product_id, marketplace, current_user=current_user)
 
 
-@router.post(
-    "/products/{product_id}/marketplaces/{marketplace}/publish-target/analyze",
-    response_model=PublishTargetAnalysisResponse,
+@router.get(
+    "/products/{product_id}/pricing/snapshot",
+    response_model=ProductPricingSnapshotResponse,
     status_code=status.HTTP_200_OK,
 )
 async def get_product_pricing_snapshot(
+async def get_product_pricing_snapshot(
     product_id: str,
-    marketplace: MarketplaceRequestLiteral,
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
-) -> PublishTargetAnalysisResponse:
+) -> ProductPricingSnapshotResponse:
     service = ProductService()
-    return await service.analyze_publish_target(product_id, marketplace, current_user=current_user)
+    return await service.get_product_pricing_snapshot(product_id, current_user=current_user)
 
 
 @router.post(
@@ -505,6 +542,20 @@ async def add_color_variant(
 ) -> ProductRecordResponse:
     service = ProductService()
     return service.add_color_variant(product_id, marketplace, payload, current_user=current_user)
+
+
+@router.post(
+    "/products/{product_id}/marketplaces/{marketplace}/generate",
+    response_model=ProductRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def generate_marketplace_section(
+    product_id: str,
+    marketplace: MarketplaceRequestLiteral,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> ProductRecordResponse:
+    service = ProductService()
+    return await service.regenerate_marketplace(product_id, marketplace, current_user=current_user)
 
 
 @router.post(

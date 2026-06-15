@@ -5,8 +5,11 @@ import base64
 import logging
 import re
 from datetime import UTC, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from statistics import mean, median
+from urllib.parse import quote, urlsplit, urlunsplit
 from statistics import mean, median
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import urlopen
@@ -24,7 +27,11 @@ from app.agents.shopify_agent import ShopifyAgent
 from app.agents.tiktok_agent import TikTokAgent
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
-from app.schemas.request import ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
+from app.schemas.request import (
+    ProductOptimizationRequest,
+    ProductUpdateRequest,
+    VariantCreateRequest,
+)
 from app.schemas.response import (
     AmazonResponse,
     CoreProductResponse,
@@ -36,18 +43,21 @@ from app.schemas.response import (
     IntelligenceLayerResponse,
     MarketplaceLiteral,
     MarketplacePricingSnapshotResponse,
+    MarketplacePricingSnapshotResponse,
     MarketplaceResearchResponse,
     MarketResearchBundleResponse,
     MarketplaceVariantsResponse,
     PaginatedProductListResponse,
-    PublishTargetAnalysisResponse,
     PipelineValidationResponse,
+    ProductPricingSnapshotResponse,
+    DynamicPricingQueryResponse,
     ProductPricingSnapshotResponse,
     DynamicPricingQueryResponse,
     ProductListItemResponse,
     ProductPipelineResponse,
     ProductRecordResponse,
     ProductVariantResponse,
+    ResearchEvidenceResponse,
     ResearchEvidenceResponse,
     SectionValidationResponse,
     SeoInsightsResponse,
@@ -56,11 +66,13 @@ from app.schemas.response import (
     TikTokResponse,
 )
 from app.services.gemini_service import GeminiServiceError
+from app.services.gemini_service import GeminiServiceError
 from app.services.image_service import ImagePayload
 from app.services.publish_target_job_store import PublishTargetJobStore
 from app.services.mongo_product_store import MongoProductStore
 from app.services.output_service import OutputService
 from app.services.product_store import ProductStore
+from app.services.s3_service import S3Service
 from app.services.s3_service import S3Service
 from app.utils.prompts import PromptRegistry
 from app.utils.product_text import best_model_term, build_category, infer_product_type, normalize_title, title_keywords, unique_strings
@@ -71,8 +83,36 @@ logger = logging.getLogger(__name__)
 
 class ProductService:
     _GEMINI_PRICING_SCHEMA = {
+    _GEMINI_PRICING_SCHEMA = {
         "type": "object",
         "properties": {
+            "status": {"type": "string", "enum": ["ok", "insufficient_data"]},
+            "minimum": {"type": "number"},
+            "maximum": {"type": "number"},
+            "recommended": {"type": "number"},
+            "currency": {"type": "string"},
+            "market_signal": {"type": "string"},
+            "analysis_summary": {"type": "string"},
+            "search_queries": {"type": "array", "items": {"type": "string"}},
+            "comparable_count": {"type": "integer"},
+            "price_sources": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "title": {"type": "string"},
+                        "url": {"type": "string"},
+                        "price": {"type": "number"},
+                        "currency": {"type": "string"},
+                    },
+                    "required": ["source", "title"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["status"],
+        "additionalProperties": False,
             "status": {"type": "string", "enum": ["ok", "insufficient_data"]},
             "minimum": {"type": "number"},
             "maximum": {"type": "number"},
@@ -133,6 +173,12 @@ class ProductService:
                 access_key_id=settings.aws_access_key_id,
                 secret_access_key=settings.aws_secret_access_key,
                 prefix=settings.aws_s3_prefix,
+            s3_service=S3Service(
+                region=settings.aws_region,
+                bucket_name=settings.aws_s3_bucket,
+                access_key_id=settings.aws_access_key_id,
+                secret_access_key=settings.aws_secret_access_key,
+                prefix=settings.aws_s3_prefix,
             ),
             local_output_enabled=settings.local_output_enabled,
         )
@@ -140,15 +186,21 @@ class ProductService:
         self.image_agent = self._shared_image_agent or ImageAgent(self.pipeline.openai_service)
         self.__class__._shared_image_agent = self.image_agent
         self.amazon_agent = self._shared_amazon_agent or AmazonAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
+        self.amazon_agent = self._shared_amazon_agent or AmazonAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.__class__._shared_amazon_agent = self.amazon_agent
+        self.ebay_agent = self._shared_ebay_agent or EbayAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.ebay_agent = self._shared_ebay_agent or EbayAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.__class__._shared_ebay_agent = self.ebay_agent
         self.etsy_agent = self._shared_etsy_agent or EtsyAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
+        self.etsy_agent = self._shared_etsy_agent or EtsyAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.__class__._shared_etsy_agent = self.etsy_agent
+        self.tiktok_agent = self._shared_tiktok_agent or TikTokAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.tiktok_agent = self._shared_tiktok_agent or TikTokAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.__class__._shared_tiktok_agent = self.tiktok_agent
         self.shopify_agent = self._shared_shopify_agent or ShopifyAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
+        self.shopify_agent = self._shared_shopify_agent or ShopifyAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.__class__._shared_shopify_agent = self.shopify_agent
+        self.optimization_agent = self._shared_optimization_agent or ProductOptimizationAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.optimization_agent = self._shared_optimization_agent or ProductOptimizationAgent(self.pipeline.openai_service, self.pipeline.gemini_service)
         self.__class__._shared_optimization_agent = self.optimization_agent
 
@@ -196,11 +248,42 @@ class ProductService:
             title=title,
             image_marketplaces=[],
         )
+        result = await self._build_generated_product(
+            image=image,
+            title=title,
+            image_marketplaces=[],
+        )
         record = ProductRecordResponse(
             id=self._new_id(),
             status="draft",
             created_at=self._timestamp(),
             updated_at=self._timestamp(),
+            run_id=result["run_id"],
+            product=result["product"],
+            variants=MarketplaceVariantsResponse(),
+        )
+        self.store.save(record, user_id=current_user.user_id if current_user is not None else None)
+        return record
+
+    async def generate_marketplace_draft(
+        self,
+        image: ImagePayload,
+        title: str,
+        marketplace: MarketplaceLiteral,
+        current_user: AuthenticatedUser | None = None,
+    ) -> ProductRecordResponse:
+        result = await self._build_generated_product(
+            image=image,
+            title=title,
+            image_marketplaces=[marketplace],
+        )
+        record = ProductRecordResponse(
+            id=self._new_id(),
+            status="draft",
+            created_at=self._timestamp(),
+            updated_at=self._timestamp(),
+            run_id=result["run_id"],
+            product=result["product"],
             run_id=result["run_id"],
             product=result["product"],
             variants=MarketplaceVariantsResponse(),
@@ -377,6 +460,15 @@ class ProductService:
                 }.items()
                 if value
             },
+            category=category or "",
+            metafields={
+                key: value
+                for key, value in {
+                    "color": color.title() if color else "",
+                    "footwear_material": material.title() if material else "",
+                }.items()
+                if value
+            },
         )
         return ProductPipelineResponse(
             core=core,
@@ -518,6 +610,20 @@ class ProductService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found.")
         del record
 
+    def delete_product(
+        self,
+        product_id: str,
+        current_user: AuthenticatedUser | None = None,
+    ) -> None:
+        record = self.get_product(product_id, current_user=current_user)
+        user_id = current_user.user_id if current_user is not None else None
+        deleted = False
+        if hasattr(self.store, "delete"):
+            deleted = bool(self.store.delete(product_id, user_id=user_id))  # type: ignore[attr-defined]
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found.")
+        del record
+
     async def optimize_product(
         self,
         product_id: str,
@@ -525,6 +631,11 @@ class ProductService:
         current_user: AuthenticatedUser | None = None,
     ) -> ProductRecordResponse:
         record = self.get_product(product_id, current_user=current_user)
+        current_core = record.product.core
+        research = await self.pipeline.research.build_research_bundle(current_core)
+        current_core = await self._seed_default_core_price(current_core, research)
+        current_product = record.product.model_copy(update={"core": current_core})
+        seo = await self.pipeline.seo.process(current_core, research)
         current_core = record.product.core
         research = await self.pipeline.research.build_research_bundle(current_core)
         current_core = await self._seed_default_core_price(current_core, research)
@@ -605,10 +716,24 @@ class ProductService:
         marketplaces: list[MarketplaceLiteral],
         current_user: AuthenticatedUser | None = None,
     ) -> ProductRecordResponse:
+        return await self.generate_product_images(
+            product_id,
+            marketplaces=[marketplace],
+            current_user=current_user,
+        )
+
+    async def generate_product_images(
+        self,
+        product_id: str,
+        *,
+        marketplaces: list[MarketplaceLiteral],
+        current_user: AuthenticatedUser | None = None,
+    ) -> ProductRecordResponse:
         record = self.get_product(product_id, current_user=current_user)
         source_image = self._load_source_image(record)
         core = record.product.core
         research = await self.pipeline.research.build_research_bundle(core)
+        core = await self._seed_default_core_price(core, research)
         core = await self._seed_default_core_price(core, research)
         seo = await self.pipeline.seo.process(core, research)
         amazon = record.product.amazon
@@ -627,8 +752,20 @@ class ProductService:
             tiktok = text_content["tiktok"]
         if "shopify" in marketplaces:
             shopify = text_content["shopify"]
+        text_content = await self._generate_marketplace_content(core=core, research=research, seo=seo)
+        if "amazon" in marketplaces:
+            amazon = text_content["amazon"]
+        if "ebay" in marketplaces:
+            ebay = text_content["ebay"]
+        if "etsy" in marketplaces:
+            etsy = text_content["etsy"]
+        if "tiktok" in marketplaces:
+            tiktok = text_content["tiktok"]
+        if "shopify" in marketplaces:
+            shopify = text_content["shopify"]
 
         product_dir = self.store.get_product_dir(record.id)
+        generated_images = await self._generate_marketplace_images(
         generated_images = await self._generate_marketplace_images(
             source=source_image,
             existing_images=record.product.images,
@@ -639,7 +776,19 @@ class ProductService:
             tiktok_data=tiktok,
             shopify_data=shopify,
             marketplaces=marketplaces,
+            marketplaces=marketplaces,
             run_dir=product_dir,
+        )
+        latest_record = self.get_product(product_id, current_user=current_user)
+        latest_product = latest_record.product
+        images = latest_product.images.model_copy(
+            update={marketplace: getattr(generated_images, marketplace) for marketplace in marketplaces}
+        )
+        merged_amazon = amazon if "amazon" in marketplaces else latest_product.amazon
+        merged_ebay = ebay if "ebay" in marketplaces else latest_product.ebay
+        merged_etsy = etsy if "etsy" in marketplaces else latest_product.etsy
+        merged_tiktok = tiktok if "tiktok" in marketplaces else latest_product.tiktok
+        merged_shopify = shopify if "shopify" in marketplaces else latest_product.shopify
         )
         latest_record = self.get_product(product_id, current_user=current_user)
         latest_product = latest_record.product
@@ -658,10 +807,21 @@ class ProductService:
             etsy=merged_etsy,
             tiktok=merged_tiktok,
             shopify=merged_shopify,
+            core=latest_product.core,
+            amazon=merged_amazon,
+            ebay=merged_ebay,
+            etsy=merged_etsy,
+            tiktok=merged_tiktok,
+            shopify=merged_shopify,
             images=images,
         )
         product = ProductPipelineResponse(
             core=core,
+            amazon=merged_amazon,
+            ebay=merged_ebay,
+            etsy=merged_etsy,
+            tiktok=merged_tiktok,
+            shopify=merged_shopify,
             amazon=merged_amazon,
             ebay=merged_ebay,
             etsy=merged_etsy,
@@ -675,15 +835,149 @@ class ProductService:
             },
         )
         updated = latest_record.model_copy(update={"product": product, "updated_at": self._timestamp()})
+        updated = latest_record.model_copy(update={"product": product, "updated_at": self._timestamp()})
         self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
-    async def analyze_publish_target(
+    async def _build_generated_product(
+        self,
+        *,
+        image: ImagePayload,
+        title: str,
+        image_marketplaces: list[MarketplaceLiteral],
+    ) -> dict[str, object]:
+        run_dir = self.output_service.create_run_dir()
+        vision_data = await self.pipeline.vision.process(image)
+        self.output_service.save_json(run_dir, "vision", vision_data.model_dump())
+        core_data = await self.pipeline.core.process(title, vision_data)
+        core_data = await self.pipeline.attribute_mapper.process(core_data, vision_data)
+        research = await self.pipeline.research.build_research_bundle(core_data)
+        core_data = await self._seed_default_core_price(core_data, research)
+        self.output_service.save_json(run_dir, "core", core_data.model_dump())
+        self.output_service.save_json(run_dir, "research", research.model_dump())
+        seo = await self.pipeline.seo.process(core_data, research)
+        self.output_service.save_json(run_dir, "seo", seo.model_dump())
+
+        text_content = await self._generate_marketplace_content(core=core_data, research=research, seo=seo)
+        for marketplace, payload in text_content.items():
+            self.output_service.save_json(run_dir, marketplace, payload.model_dump())
+
+        source_asset = self.image_agent._save_source(image=image, run_dir=run_dir, output_service=self.output_service)
+        cutout_asset = await self.image_agent._build_cutout(
+            image=image,
+            core_data=core_data,
+            run_dir=run_dir,
+            output_service=self.output_service,
+        )
+        images = self._pending_generated_images(
+            source_asset=source_asset,
+            transparent_cutout=cutout_asset,
+        )
+        if image_marketplaces:
+            images = await self._generate_marketplace_images(
+                source=image,
+                existing_images=images,
+                core_data=core_data,
+                amazon_data=text_content["amazon"],
+                ebay_data=text_content["ebay"],
+                etsy_data=text_content["etsy"],
+                tiktok_data=text_content["tiktok"],
+                shopify_data=text_content["shopify"],
+                marketplaces=image_marketplaces,
+                run_dir=run_dir,
+            )
+        self.output_service.save_json(run_dir, "images", images.model_dump())
+        validation = self.pipeline.validation.validate_pipeline(
+            core=core_data,
+            amazon=text_content["amazon"],
+            ebay=text_content["ebay"],
+            etsy=text_content["etsy"],
+            tiktok=text_content["tiktok"],
+            shopify=text_content["shopify"],
+            images=images,
+        )
+        product = ProductPipelineResponse(
+            core=core_data,
+            amazon=text_content["amazon"],
+            ebay=text_content["ebay"],
+            etsy=text_content["etsy"],
+            tiktok=text_content["tiktok"],
+            shopify=text_content["shopify"],
+            images=images,
+            intelligence={
+                "research": research,
+                "seo": seo,
+                "validation": validation,
+            },
+        )
+        self.output_service.save_json(run_dir, "validation", validation.model_dump())
+        self.output_service.save_json(run_dir, "final", product.model_dump())
+        return {
+            "run_id": run_dir.name,
+            "product": product,
+        }
+
+    async def _generate_marketplace_content(
+        self,
+        *,
+        core: CoreProductResponse,
+        research: MarketResearchBundleResponse,
+        seo: SeoInsightsResponse,
+    ) -> dict[str, AmazonResponse | EbayResponse | EtsyResponse | TikTokResponse | ShopifyResponse]:
+        amazon, ebay, etsy, tiktok, shopify = await asyncio.gather(
+            self.amazon_agent.process(core, research=research.amazon, seo=seo),
+            self.ebay_agent.process(core, research=research.ebay, seo=seo),
+            self.etsy_agent.process(core, research=research.etsy, seo=seo),
+            self.tiktok_agent.process(core, research=research.tiktok, seo=seo),
+            self.shopify_agent.process(core, research=research.shopify, seo=seo),
+        )
+        return {
+            "amazon": amazon,
+            "ebay": ebay,
+            "etsy": etsy,
+            "tiktok": tiktok,
+            "shopify": shopify,
+        }
+
+    async def _generate_marketplace_images(
+        self,
+        *,
+        source: ImagePayload,
+        existing_images: GeneratedImagesResponse,
+        core_data: CoreProductResponse,
+        amazon_data: AmazonResponse,
+        ebay_data: EbayResponse,
+        etsy_data: EtsyResponse,
+        tiktok_data: TikTokResponse,
+        shopify_data: ShopifyResponse,
+        marketplaces: list[MarketplaceLiteral],
+        run_dir: Path,
+    ) -> GeneratedImagesResponse:
+        async def generate_one(marketplace: MarketplaceLiteral) -> tuple[MarketplaceLiteral, ImageVariantResponse]:
+            asset = await self.image_agent.regenerate_marketplace_asset(
+                marketplace=marketplace,
+                source=source,
+                existing_images=existing_images,
+                core_data=core_data,
+                amazon_data=amazon_data,
+                ebay_data=ebay_data,
+                etsy_data=etsy_data,
+                tiktok_data=tiktok_data,
+                shopify_data=shopify_data,
+                run_dir=run_dir,
+                output_service=self.output_service,
+            )
+            return marketplace, asset
+
+        unique_marketplaces = list(dict.fromkeys(marketplaces))
+        generated = await asyncio.gather(*(generate_one(marketplace) for marketplace in unique_marketplaces))
+        return existing_images.model_copy(update={marketplace: asset for marketplace, asset in generated})
+
+    async def get_product_pricing_snapshot(
         self,
         product_id: str,
-        marketplace: MarketplaceLiteral,
         current_user: AuthenticatedUser | None = None,
-    ) -> PublishTargetAnalysisResponse:
+    ) -> ProductPricingSnapshotResponse:
         record = self.get_product(product_id, current_user=current_user)
         research = await self.pipeline.research.build_research_bundle(record.product.core)
         selected_research = self._research_for_marketplace(research, marketplace)
@@ -1248,20 +1542,40 @@ class ProductService:
         return f"{marketplace.title()} pricing data is insufficient right now."
 
     @staticmethod
-    def _research_for_marketplace(research: MarketResearchBundleResponse, marketplace: MarketplaceLiteral) -> MarketplaceResearchResponse:
-        if marketplace == "amazon":
-            return research.amazon
-        if marketplace == "ebay":
-            return research.ebay
-        if marketplace == "etsy":
-            return research.etsy
-        if marketplace == "tiktok":
-            return research.tiktok
-        return research.shopify
+    def _has_reliable_market_pricing(research: MarketplaceResearchResponse, core: CoreProductResponse | None = None) -> bool:
+        if research.source_mode != "live_api":
+            return False
+        listing_prices = ProductService._filtered_live_listing_prices(research, core)
+        return len(listing_prices) >= 2
 
+    @staticmethod
+    def _best_live_pricing_reference(
+        research: MarketResearchBundleResponse,
+        core: CoreProductResponse,
+    ) -> tuple[MarketplaceLiteral | None, MarketplaceResearchResponse | None]:
+        candidates: list[tuple[MarketplaceLiteral, MarketplaceResearchResponse]] = [
+            ("amazon", research.amazon),
+            ("ebay", research.ebay),
+            ("etsy", research.etsy),
+            ("tiktok", research.tiktok),
+            ("shopify", research.shopify),
+        ]
+        live_candidates = [
+            (marketplace, market_research)
+            for marketplace, market_research in candidates
+            if ProductService._has_reliable_market_pricing(market_research, core)
+        ]
+        if not live_candidates:
+            return None, None
+        live_candidates.sort(
+            key=lambda item: len(ProductService._filtered_live_listing_prices(item[1], core)),
+            reverse=True,
+        )
+        return live_candidates[0]
+
+    async def _build_gemini_pricing_estimate(
     async def _seed_default_core_price(
         self,
-        record: ProductRecordResponse,
         marketplace: MarketplaceLiteral,
         research: MarketplaceResearchResponse,
     ) -> PublishTargetAnalysisResponse:
@@ -1309,26 +1623,142 @@ class ProductService:
         return PublishTargetAnalysisResponse.model_validate(payload)
 
     @staticmethod
-    def _publish_vendor_for_marketplace(record: ProductRecordResponse, marketplace: MarketplaceLiteral) -> str:
-        core = record.product.core
-        vendor = core.attributes.get("brand") or core.attributes.get("vendor")
-        if vendor:
-            return vendor.strip()
-        if marketplace == "shopify":
-            return core.category or "CommandCtr"
-        return core.normalized_title.split(" ")[0] if core.normalized_title else "CommandCtr"
+    def _empty_pricing_research_bundle() -> MarketResearchBundleResponse:
+        return MarketResearchBundleResponse(
+            amazon=MarketplaceResearchResponse(marketplace="amazon"),
+            ebay=MarketplaceResearchResponse(marketplace="ebay"),
+            etsy=MarketplaceResearchResponse(marketplace="etsy"),
+            tiktok=MarketplaceResearchResponse(marketplace="tiktok"),
+            shopify=MarketplaceResearchResponse(marketplace="shopify"),
+        )
 
     @staticmethod
-    def _publish_sku_for_marketplace(record: ProductRecordResponse, marketplace: MarketplaceLiteral) -> str:
-        core = record.product.core
-        sku = core.attributes.get("sku")
-        if sku and sku.strip():
-            return sku.strip()
-        prefix = marketplace[:3].upper()
-        seed = re.sub(r"[^A-Za-z0-9]+", "", core.normalized_title or core.source_title or record.id).upper()[:8]
-        if not seed:
-            seed = record.id[:8].upper()
-        return f"{prefix}-{seed}"
+    def _build_query_core(product_name: str) -> CoreProductResponse:
+        normalized = product_name.strip()
+        query_keywords = title_keywords(normalized)[:8]
+        category = query_keywords[0].title() if query_keywords else normalized or "query"
+        product_type = query_keywords[1].title() if len(query_keywords) > 1 else category
+        attributes: dict[str, str] = {
+            "query": normalized,
+            "query_keywords": ", ".join(query_keywords),
+        }
+
+        return CoreProductResponse(
+            normalized_title=normalized,
+            category=category,
+            product_type=product_type,
+            product_summary=f"Dynamic pricing lookup for {normalized}.",
+            features=[
+                f"Query-driven pricing for {normalized}.",
+                f"Search keywords: {', '.join(query_keywords) if query_keywords else normalized}.",
+                "Uses live Google search evidence and ignores mismatched variants.",
+            ],
+            attributes=attributes,
+            source_title=normalized,
+            vision_confidence=0.0,
+        )
+
+    @staticmethod
+    def _default_price_from_band(
+        suggested: SuggestedPriceRangeResponse | None,
+        research: MarketplaceResearchResponse,
+        core: CoreProductResponse,
+        marketplace: MarketplaceLiteral,
+    ) -> float | None:
+        if suggested is None:
+            return None
+
+        minimum = suggested.minimum
+        maximum = suggested.maximum
+        recommended = suggested.recommended
+        if maximum <= minimum:
+            return round(recommended, 2)
+
+        identity = " ".join(
+            [
+                core.normalized_title,
+                core.source_title,
+                core.category,
+                core.product_type,
+                core.product_summary,
+                " ".join(core.features),
+            ]
+        ).lower()
+        is_high_value_electronics = any(
+            keyword in identity
+            for keyword in (
+                "playstation",
+                "ps5",
+                "xbox",
+                "nintendo switch",
+                "console",
+                "gaming",
+                "electronics",
+            )
+        )
+
+        anchor_ratio = 0.78 if is_high_value_electronics else 0.66
+        if research.source_mode == "live_api":
+            anchor_ratio = max(anchor_ratio, 0.76)
+        elif marketplace in {"amazon", "shopify"}:
+            anchor_ratio = max(anchor_ratio, 0.7)
+
+        strategic_price = minimum + ((maximum - minimum) * anchor_ratio)
+        strategic_price = max(strategic_price, recommended)
+        return round(min(maximum, strategic_price), 2)
+
+    @staticmethod
+    def _insufficient_pricing_signal(marketplace: MarketplaceLiteral, research: MarketplaceResearchResponse) -> str:
+        if research.search_queries:
+            return f"{marketplace.title()} pricing needs stronger matches for: {research.search_queries[0]}"
+        return f"{marketplace.title()} pricing data is insufficient right now."
+
+    @staticmethod
+    def _research_for_marketplace(research: MarketResearchBundleResponse, marketplace: MarketplaceLiteral) -> MarketplaceResearchResponse:
+        if marketplace == "amazon":
+            return research.amazon
+        if marketplace == "ebay":
+            return research.ebay
+        if marketplace == "etsy":
+            return research.etsy
+        if marketplace == "tiktok":
+            return research.tiktok
+        return research.shopify
+
+    async def _seed_default_core_price(
+        self,
+        core: CoreProductResponse,
+        research: MarketResearchBundleResponse,
+    ) -> CoreProductResponse:
+        current_price = self._parse_price(core.attributes.get("price"))
+        if current_price is not None:
+            return core
+
+        seeded_price = await self._estimate_initial_draft_price(core, research)
+        if seeded_price is None:
+            return core
+
+        return core.model_copy(
+            update={
+                "attributes": {
+                    **core.attributes,
+                    "price": f"{seeded_price:.2f}",
+                }
+            }
+        )
+
+    async def _estimate_initial_draft_price(
+        self,
+        core: CoreProductResponse,
+        research: MarketResearchBundleResponse,
+    ) -> float | None:
+        if self._gemini_search_enabled():
+            gemini_estimate = await self._build_gemini_pricing_estimate("shopify", research.shopify, core)
+            if gemini_estimate is not None:
+                recommended = self._parse_price(gemini_estimate.get("recommended_price"))
+                if recommended is not None:
+                    return round(recommended, 2)
+        return None
 
     @staticmethod
     def _default_price_from_band(
@@ -1385,33 +1815,33 @@ class ProductService:
         marketplace: MarketplaceLiteral,
         research: MarketplaceResearchResponse,
     ) -> SuggestedPriceRangeResponse | None:
-        anchor = ProductService._product_price_anchor(core)
-        current_price = ProductService._parse_price(core.attributes.get("price")) or anchor
-        if current_price < anchor * 0.45 or current_price > anchor * 2.5:
-            current_price = anchor
+        listing_prices = ProductService._filtered_live_listing_prices(research, core)
+        if not listing_prices:
+            listing_prices = [listing.price for listing in research.similar_listings if listing.price is not None]
+        if listing_prices:
+            observed_prices = sorted(listing_prices)
+            observed_min = observed_prices[0]
+            observed_max = observed_prices[-1]
+            observed_median = median(observed_prices)
+            observed_mean = mean(observed_prices)
+            spread = observed_max - observed_min
+            if spread <= 0:
+                spread = max(0.08 * observed_median, 5.0)
 
-        minimum = research.price_min
-        maximum = research.price_max
-        average = research.price_avg or research.regular_price_avg or current_price
+            marketplace_bias = {
+                "amazon": 1.0,
+                "ebay": 0.99,
+                "etsy": 1.02,
+                "tiktok": 0.97,
+                "shopify": 1.04,
+            }[marketplace]
+            recommended = round(max(0.01, (observed_median + observed_mean) / 2 * marketplace_bias), 2)
 
-        if minimum is None or minimum < anchor * 0.7:
-            minimum = round(max(0.01, anchor * 0.9), 2)
-        if maximum is None or maximum < anchor * 0.85:
-            maximum = round(max(minimum, anchor * 1.12), 2)
-        if maximum < minimum:
-            maximum = round(minimum * 1.1, 2)
-
-        if average < anchor * 0.75:
-            average = anchor
-
-        multiplier = {
-            "amazon": 1.0,
-            "ebay": 0.97,
-            "etsy": 1.05,
-            "tiktok": 0.95,
-            "shopify": 1.08,
-        }[marketplace]
-        recommended = round(max(minimum, min(maximum, max(average, anchor) * multiplier)), 2)
+            padding = max(spread * 0.18, recommended * 0.06)
+            minimum = round(max(0.01, min(observed_min, recommended - padding)), 2)
+            maximum = round(max(observed_max, recommended + padding), 2)
+        else:
+            return None
 
         return SuggestedPriceRangeResponse(
             minimum=round(minimum, 2),
@@ -1570,7 +2000,7 @@ class ProductService:
         pricing_mode: str = "pricing analysis",
         suggested_range: SuggestedPriceRangeResponse | None = None,
     ) -> str:
-        if research.price_min is not None and research.price_max is not None:
+        if default_price is None:
             return (
                 f"{product_label} on {marketplace.title()} supports a default price around ${default_price:.2f} "
                 f"inside a ${research.price_min:.2f} to ${research.price_max:.2f} band."
@@ -1841,7 +2271,10 @@ class ProductService:
         if source.absolute_path.startswith("http://") or source.absolute_path.startswith("https://"):
             remote_url = ProductService._safe_remote_url(source.absolute_path)
             with urlopen(remote_url, timeout=30) as response:
+            remote_url = ProductService._safe_remote_url(source.absolute_path)
+            with urlopen(remote_url, timeout=30) as response:
                 payload = response.read()
+            filename = Path(source.relative_path or Path(urlsplit(remote_url).path).name).name
             filename = Path(source.relative_path or Path(urlsplit(remote_url).path).name).name
             return ImagePayload(
                 filename=filename or "source.bin",

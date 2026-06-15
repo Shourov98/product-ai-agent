@@ -19,9 +19,11 @@ class OutputService:
         base_dir: str,
         *,
         s3_service: S3Service | None = None,
+        s3_service: S3Service | None = None,
         local_output_enabled: bool = False,
     ) -> None:
         self.base_dir = Path(base_dir).resolve()
+        self.s3_service = s3_service
         self.s3_service = s3_service
         self.local_output_enabled = local_output_enabled
         if self.local_output_enabled:

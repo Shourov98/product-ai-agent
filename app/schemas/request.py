@@ -63,6 +63,8 @@ class ShopifyUpdateRequest(BaseModel):
     seo_description: str | None = Field(default=None, min_length=1, max_length=180)
     category: str | None = Field(default=None, min_length=1, max_length=200)
     metafields: dict[str, str] | None = None
+    category: str | None = Field(default=None, min_length=1, max_length=200)
+    metafields: dict[str, str] | None = None
 
 
 class EtsyUpdateRequest(BaseModel):
@@ -89,7 +91,3 @@ class VariantCreateRequest(BaseModel):
 
 
 MarketplaceRequestLiteral = Literal["amazon", "ebay", "etsy", "tiktok", "shopify"]
-
-
-class PublishTargetAnalysisRequest(BaseModel):
-    marketplace: MarketplaceRequestLiteral
