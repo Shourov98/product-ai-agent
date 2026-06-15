@@ -6,18 +6,8 @@ from app.auth import AuthenticatedUser, get_optional_current_user
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
 from app.schemas.imports import DuplicateResolutionResponse, ImportRecordResponse, ImportUploadResponse, PaginatedImportListResponse, UploadImportAsProductResponse
-from app.schemas.request import (
-    MarketplaceRequestLiteral,
-    ProductOptimizationRequest,
-    ProductUpdateRequest,
-    VariantCreateRequest,
-)
-from app.schemas.response import (
-    PaginatedProductListResponse,
-    ProductPipelineResponse,
-    ProductPricingSnapshotResponse,
-    ProductRecordResponse,
-)
+from app.schemas.request import MarketplaceRequestLiteral, ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
+from app.schemas.response import PaginatedProductListResponse, ProductPipelineResponse, ProductRecordResponse, PublishTargetAnalysisResponse
 from app.services.image_service import ImagePayload
 from app.services.import_service import ImportService
 from app.services.product_service import ProductService
@@ -393,17 +383,18 @@ async def optimize_marketplace(
     return await service.optimize_marketplace(product_id, marketplace, current_user=current_user)
 
 
-@router.get(
-    "/products/{product_id}/pricing/snapshot",
-    response_model=ProductPricingSnapshotResponse,
+@router.post(
+    "/products/{product_id}/marketplaces/{marketplace}/publish-target/analyze",
+    response_model=PublishTargetAnalysisResponse,
     status_code=status.HTTP_200_OK,
 )
 async def get_product_pricing_snapshot(
     product_id: str,
+    marketplace: MarketplaceRequestLiteral,
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
-) -> ProductPricingSnapshotResponse:
+) -> PublishTargetAnalysisResponse:
     service = ProductService()
-    return await service.get_product_pricing_snapshot(product_id, current_user=current_user)
+    return await service.analyze_publish_target(product_id, marketplace, current_user=current_user)
 
 
 @router.post(

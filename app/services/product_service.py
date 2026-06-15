@@ -21,11 +21,7 @@ from app.agents.shopify_agent import ShopifyAgent
 from app.agents.tiktok_agent import TikTokAgent
 from app.config import get_settings
 from app.orchestrator.pipeline import ProductPipeline
-from app.schemas.request import (
-    ProductOptimizationRequest,
-    ProductUpdateRequest,
-    VariantCreateRequest,
-)
+from app.schemas.request import ProductOptimizationRequest, ProductUpdateRequest, VariantCreateRequest
 from app.schemas.response import (
     AmazonResponse,
     CoreProductResponse,
@@ -41,6 +37,7 @@ from app.schemas.response import (
     MarketResearchBundleResponse,
     MarketplaceVariantsResponse,
     PaginatedProductListResponse,
+    PublishTargetAnalysisResponse,
     PipelineValidationResponse,
     ProductPricingSnapshotResponse,
     ProductListItemResponse,
@@ -55,6 +52,7 @@ from app.schemas.response import (
 )
 from app.services.gemini_service import GeminiServiceError
 from app.services.image_service import ImagePayload
+from app.services.publish_target_job_store import PublishTargetJobStore
 from app.services.mongo_product_store import MongoProductStore
 from app.services.openai_service import OpenAIServiceError
 from app.services.output_service import OutputService
@@ -650,307 +648,44 @@ class ProductService:
         self.store.save(updated, user_id=current_user.user_id if current_user is not None else None)
         return updated
 
-    async def _build_generated_product(
-        self,
-        *,
-        image: ImagePayload,
-        title: str,
-        image_marketplaces: list[MarketplaceLiteral],
-    ) -> dict[str, object]:
-        run_dir = self.output_service.create_run_dir()
-        vision_data = await self.pipeline.vision.process(image)
-        self.output_service.save_json(run_dir, "vision", vision_data.model_dump())
-        core_data = await self.pipeline.core.process(title, vision_data)
-        core_data = await self.pipeline.attribute_mapper.process(core_data, vision_data)
-        research = await self.pipeline.research.build_research_bundle(core_data)
-        core_data = await self._seed_default_core_price(core_data, research)
-        self.output_service.save_json(run_dir, "core", core_data.model_dump())
-        self.output_service.save_json(run_dir, "research", research.model_dump())
-        seo = await self.pipeline.seo.process(core_data, research)
-        self.output_service.save_json(run_dir, "seo", seo.model_dump())
-
-        text_content = await self._generate_marketplace_content(core=core_data, research=research, seo=seo)
-        for marketplace, payload in text_content.items():
-            self.output_service.save_json(run_dir, marketplace, payload.model_dump())
-
-        source_asset = self.image_agent._save_source(image=image, run_dir=run_dir, output_service=self.output_service)
-        cutout_asset = await self.image_agent._build_cutout(
-            image=image,
-            core_data=core_data,
-            run_dir=run_dir,
-            output_service=self.output_service,
-        )
-        images = self._pending_generated_images(
-            source_asset=source_asset,
-            transparent_cutout=cutout_asset,
-        )
-        if image_marketplaces:
-            images = await self._generate_marketplace_images(
-                source=image,
-                existing_images=images,
-                core_data=core_data,
-                amazon_data=text_content["amazon"],
-                ebay_data=text_content["ebay"],
-                etsy_data=text_content["etsy"],
-                tiktok_data=text_content["tiktok"],
-                shopify_data=text_content["shopify"],
-                marketplaces=image_marketplaces,
-                run_dir=run_dir,
-            )
-        self.output_service.save_json(run_dir, "images", images.model_dump())
-        validation = self.pipeline.validation.validate_pipeline(
-            core=core_data,
-            amazon=text_content["amazon"],
-            ebay=text_content["ebay"],
-            etsy=text_content["etsy"],
-            tiktok=text_content["tiktok"],
-            shopify=text_content["shopify"],
-            images=images,
-        )
-        product = ProductPipelineResponse(
-            core=core_data,
-            amazon=text_content["amazon"],
-            ebay=text_content["ebay"],
-            etsy=text_content["etsy"],
-            tiktok=text_content["tiktok"],
-            shopify=text_content["shopify"],
-            images=images,
-            intelligence={
-                "research": research,
-                "seo": seo,
-                "validation": validation,
-            },
-        )
-        self.output_service.save_json(run_dir, "validation", validation.model_dump())
-        self.output_service.save_json(run_dir, "final", product.model_dump())
-        return {
-            "run_id": run_dir.name,
-            "product": product,
-        }
-
-    async def _generate_marketplace_content(
-        self,
-        *,
-        core: CoreProductResponse,
-        research: MarketResearchBundleResponse,
-        seo: SeoInsightsResponse,
-    ) -> dict[str, AmazonResponse | EbayResponse | EtsyResponse | TikTokResponse | ShopifyResponse]:
-        amazon, ebay, etsy, tiktok, shopify = await asyncio.gather(
-            self.amazon_agent.process(core, research=research.amazon, seo=seo),
-            self.ebay_agent.process(core, research=research.ebay, seo=seo),
-            self.etsy_agent.process(core, research=research.etsy, seo=seo),
-            self.tiktok_agent.process(core, research=research.tiktok, seo=seo),
-            self.shopify_agent.process(core, research=research.shopify, seo=seo),
-        )
-        return {
-            "amazon": amazon,
-            "ebay": ebay,
-            "etsy": etsy,
-            "tiktok": tiktok,
-            "shopify": shopify,
-        }
-
-    async def _generate_marketplace_images(
-        self,
-        *,
-        source: ImagePayload,
-        existing_images: GeneratedImagesResponse,
-        core_data: CoreProductResponse,
-        amazon_data: AmazonResponse,
-        ebay_data: EbayResponse,
-        etsy_data: EtsyResponse,
-        tiktok_data: TikTokResponse,
-        shopify_data: ShopifyResponse,
-        marketplaces: list[MarketplaceLiteral],
-        run_dir: Path,
-    ) -> GeneratedImagesResponse:
-        async def generate_one(marketplace: MarketplaceLiteral) -> tuple[MarketplaceLiteral, ImageVariantResponse]:
-            asset = await self.image_agent.regenerate_marketplace_asset(
-                marketplace=marketplace,
-                source=source,
-                existing_images=existing_images,
-                core_data=core_data,
-                amazon_data=amazon_data,
-                ebay_data=ebay_data,
-                etsy_data=etsy_data,
-                tiktok_data=tiktok_data,
-                shopify_data=shopify_data,
-                run_dir=run_dir,
-                output_service=self.output_service,
-            )
-            return marketplace, asset
-
-        unique_marketplaces = list(dict.fromkeys(marketplaces))
-        generated = await asyncio.gather(*(generate_one(marketplace) for marketplace in unique_marketplaces))
-        return existing_images.model_copy(update={marketplace: asset for marketplace, asset in generated})
-
-    async def get_product_pricing_snapshot(
+    async def analyze_publish_target(
         self,
         product_id: str,
+        marketplace: MarketplaceLiteral,
         current_user: AuthenticatedUser | None = None,
     ) -> ProductPricingSnapshotResponse:
         record = self.get_product(product_id, current_user=current_user)
-        core = record.product.core
-        research = await self.pipeline.research.build_research_bundle(core)
-        core = await self._seed_default_core_price(core, research)
-        reference_marketplace, reference_research = self._best_live_pricing_reference(research, core)
-        markets = await asyncio.gather(
-            self._build_marketplace_pricing_snapshot("amazon", research.amazon, core, reference_marketplace, reference_research),
-            self._build_marketplace_pricing_snapshot("ebay", research.ebay, core, reference_marketplace, reference_research),
-            self._build_marketplace_pricing_snapshot("etsy", research.etsy, core, reference_marketplace, reference_research),
-            self._build_marketplace_pricing_snapshot("tiktok", research.tiktok, core, reference_marketplace, reference_research),
-            self._build_marketplace_pricing_snapshot("shopify", research.shopify, core, reference_marketplace, reference_research),
-        )
-        timestamp = self._timestamp()
-        return ProductPricingSnapshotResponse(
-            product_id=record.id,
-            generated_at=timestamp,
-            markets=markets,
-        )
+        research = await self.pipeline.research.build_research_bundle(record.product.core)
+        selected_research = self._research_for_marketplace(research, marketplace)
+        fallback = self._build_publish_target_analysis(record, marketplace, selected_research)
 
-    async def _build_marketplace_pricing_snapshot(
-        self,
-        marketplace: MarketplaceLiteral,
-        research: MarketplaceResearchResponse,
-        core: CoreProductResponse,
-        reference_marketplace: MarketplaceLiteral | None = None,
-        reference_research: MarketplaceResearchResponse | None = None,
-    ) -> MarketplacePricingSnapshotResponse:
-        if self._gemini_search_enabled():
-            gemini_estimate = await self._build_gemini_pricing_estimate(marketplace, research, core)
-            if gemini_estimate is not None:
-                suggested = gemini_estimate["suggested_price_range"]
-                recommended = gemini_estimate["recommended_price"]
-                return MarketplacePricingSnapshotResponse(
-                    marketplace=marketplace,
-                    source_mode="gemini_search",
-                    search_queries=gemini_estimate["search_queries"],
-                    comparable_count=gemini_estimate["comparable_count"],
-                    recommended_price=recommended,
-                    currency=suggested.currency if suggested is not None else "USD",
-                    suggested_price_range=suggested,
-                    market_signal=gemini_estimate["market_signal"],
-                    analysis_summary=gemini_estimate["analysis_summary"],
-                    similar_listings=research.similar_listings[:3],
-                )
-            return MarketplacePricingSnapshotResponse(
-                marketplace=marketplace,
-                source_mode="insufficient_data",
-                search_queries=research.search_queries,
-                comparable_count=0,
-                recommended_price=None,
-                currency="USD",
-                suggested_price_range=None,
-                market_signal=self._insufficient_pricing_signal(marketplace, research),
-                analysis_summary=(
-                    f"{self._product_identity_label(core)} on {marketplace.title()} "
-                    "does not have enough reliable Google search pricing data yet."
-                ),
-                similar_listings=[],
+        openai_service = self.pipeline.openai_service
+        if openai_service is None or not openai_service.enabled:
+            return fallback
+
+        try:
+            data = await openai_service.generate_structured_output(
+                system_prompt=PromptRegistry.get_publish_target_prompt(),
+                user_payload={
+                    "marketplace": marketplace,
+                    "product_identity": {
+                        "normalized_title": record.product.core.normalized_title,
+                        "source_title": record.product.core.source_title,
+                        "category": record.product.core.category,
+                        "product_type": record.product.core.product_type,
+                        "product_summary": record.product.core.product_summary,
+                        "features": record.product.core.features,
+                        "attributes": record.product.core.attributes,
+                    },
+                    "product": record.product.model_dump(exclude={"images", "intelligence"}),
+                    "research": selected_research.model_dump(),
+                },
+                schema_name="publish_target_analysis",
+                schema=self._PUBLISH_TARGET_SCHEMA,
             )
-
-        if self._has_reliable_market_pricing(research):
-            suggested = self._suggested_price_for_marketplace(core, marketplace, research)
-            recommended = self._default_price_from_band(suggested, research, core, marketplace)
-            return MarketplacePricingSnapshotResponse(
-                marketplace=marketplace,
-                source_mode=research.source_mode,
-                search_queries=research.search_queries,
-                comparable_count=len(research.similar_listings),
-                recommended_price=round(recommended, 2) if recommended is not None else None,
-                currency=suggested.currency if suggested is not None else "USD",
-                suggested_price_range=suggested,
-                market_signal=self._market_signal_for_marketplace(marketplace, research),
-                analysis_summary=self._analysis_summary_for_marketplace(
-                    self._product_identity_label(core),
-                    marketplace,
-                    research,
-                    recommended,
-                    core.product_summary,
-                    pricing_mode="live_api",
-                    suggested_range=suggested,
-                ),
-                similar_listings=research.similar_listings[:5],
-            )
-
-        if reference_research is not None and reference_marketplace is not None:
-            suggested = self._suggested_price_for_marketplace(core, marketplace, reference_research)
-            recommended = self._default_price_from_band(suggested, reference_research, core, marketplace)
-            return MarketplacePricingSnapshotResponse(
-                marketplace=marketplace,
-                source_mode="cross_market_live_reference",
-                search_queries=reference_research.search_queries or research.search_queries,
-                comparable_count=len(reference_research.similar_listings),
-                recommended_price=round(recommended, 2) if recommended is not None else None,
-                currency=suggested.currency if suggested is not None else "USD",
-                suggested_price_range=suggested,
-                market_signal=(
-                    f"{marketplace.title()} pricing anchored to {reference_marketplace.title()} live comps "
-                    f"for {self._product_identity_label(core)}."
-                ),
-                analysis_summary=self._analysis_summary_for_marketplace(
-                    self._product_identity_label(core),
-                    marketplace,
-                    reference_research,
-                    recommended,
-                    core.product_summary,
-                    pricing_mode="cross_market_live_reference",
-                    suggested_range=suggested,
-                ),
-                similar_listings=reference_research.similar_listings[:5],
-            )
-
-        ai_estimate = await self._build_ai_pricing_estimate(marketplace, research, core)
-        if ai_estimate is not None:
-            suggested = ai_estimate["suggested_price_range"]
-            recommended = ai_estimate["recommended_price"]
-            return MarketplacePricingSnapshotResponse(
-                marketplace=marketplace,
-                source_mode="ai_estimate",
-                search_queries=research.search_queries,
-                comparable_count=len(research.similar_listings),
-                recommended_price=recommended,
-                currency=suggested.currency if suggested is not None else "USD",
-                suggested_price_range=suggested,
-                market_signal=ai_estimate["market_signal"],
-                analysis_summary=ai_estimate["analysis_summary"],
-                similar_listings=research.similar_listings[:3],
-            )
-
-        suggested = self._suggested_price_for_marketplace(core, marketplace, research)
-        recommended = self._default_price_from_band(suggested, research, core, marketplace)
-        if suggested is None or recommended is None:
-            base_price = self._estimate_base_price(core)
-            spread = 0.16 if base_price >= 100 else 0.22
-            suggested = SuggestedPriceRangeResponse(
-                minimum=round(max(0.01, base_price * (1 - spread)), 2),
-                maximum=round(base_price * (1 + spread), 2),
-                recommended=round(base_price, 2),
-                currency="USD",
-                source="estimated_range",
-            )
-            recommended = round(base_price, 2)
-
-        return MarketplacePricingSnapshotResponse(
-            marketplace=marketplace,
-            source_mode="estimated_range",
-            search_queries=research.search_queries,
-            comparable_count=len(research.similar_listings),
-            recommended_price=round(recommended, 2),
-            currency=suggested.currency,
-            suggested_price_range=suggested.model_copy(update={"source": "estimated_range"}),
-            market_signal=self._market_signal_for_marketplace(marketplace, research),
-            analysis_summary=self._analysis_summary_for_marketplace(
-                self._product_identity_label(core),
-                marketplace,
-                research,
-                recommended,
-                core.product_summary,
-                pricing_mode="estimated_range",
-                suggested_range=suggested,
-            ),
-            similar_listings=research.similar_listings[:3],
-        )
+            return self._from_publish_target_data(data, fallback)
+        except Exception:
+            return fallback
 
     def add_size_variant(
         self,
@@ -1234,53 +969,74 @@ class ProductService:
 
     async def _seed_default_core_price(
         self,
-        core: CoreProductResponse,
-        research: MarketResearchBundleResponse,
-    ) -> CoreProductResponse:
-        current_price = self._parse_price(core.attributes.get("price"))
-        if current_price is not None:
-            return core
-
-        seeded_price = await self._estimate_initial_draft_price(core, research)
-        if seeded_price is None:
-            return core
-
-        return core.model_copy(
-            update={
-                "attributes": {
-                    **core.attributes,
-                    "price": f"{seeded_price:.2f}",
-                }
-            }
+        record: ProductRecordResponse,
+        marketplace: MarketplaceLiteral,
+        research: MarketplaceResearchResponse,
+    ) -> PublishTargetAnalysisResponse:
+        core = record.product.core
+        product_label = self._product_identity_label(core)
+        vendor = self._publish_vendor_for_marketplace(record, marketplace)
+        sku = self._publish_sku_for_marketplace(record, marketplace)
+        description = self._publish_description_for_marketplace(record, marketplace)
+        suggested = self._suggested_price_for_marketplace(core, marketplace, research)
+        default_price = suggested.recommended if suggested is not None else self._fallback_default_price(core, marketplace)
+        market_signal = self._market_signal_for_marketplace(marketplace, research)
+        summary = self._analysis_summary_for_marketplace(product_label, marketplace, research, default_price)
+        return PublishTargetAnalysisResponse(
+            marketplace=marketplace,
+            vendor=vendor,
+            default_sku=sku,
+            default_price=f"{default_price:.2f}",
+            publish_description=description,
+            suggested_price_range=suggested,
+            market_signal=market_signal,
+            analysis_summary=summary,
         )
 
-    async def _estimate_initial_draft_price(
+    def _from_publish_target_data(
         self,
-        core: CoreProductResponse,
-        research: MarketResearchBundleResponse,
-    ) -> float | None:
-        if self._gemini_search_enabled():
-            gemini_estimate = await self._build_gemini_pricing_estimate("shopify", research.shopify, core)
-            if gemini_estimate is not None:
-                recommended = self._parse_price(gemini_estimate.get("recommended_price"))
-                if recommended is not None:
-                    return round(recommended, 2)
-            return None
+        data: dict[str, object],
+        fallback: PublishTargetAnalysisResponse,
+    ) -> PublishTargetAnalysisResponse:
+        suggested = data.get("suggested_price_range")
+        if isinstance(suggested, dict):
+            range_payload: dict[str, object] | None = suggested
+        else:
+            range_payload = None
 
-        reference_marketplace, reference_research = self._best_live_pricing_reference(research, core)
-        if reference_research is not None and reference_marketplace is not None:
-            suggested = self._suggested_price_for_marketplace(core, reference_marketplace, reference_research)
-            recommended = self._default_price_from_band(suggested, reference_research, core, reference_marketplace)
-            if recommended is not None:
-                return round(recommended, 2)
+        payload: dict[str, object] = {
+            "marketplace": str(data.get("marketplace", fallback.marketplace)),
+            "vendor": str(data.get("vendor", fallback.vendor)),
+            "default_sku": str(data.get("default_sku", fallback.default_sku)),
+            "default_price": str(data.get("default_price", fallback.default_price)),
+            "publish_description": str(data.get("publish_description", fallback.publish_description)),
+            "suggested_price_range": range_payload if range_payload is not None else fallback.suggested_price_range,
+            "market_signal": str(data.get("market_signal", fallback.market_signal)),
+            "analysis_summary": str(data.get("analysis_summary", fallback.analysis_summary)),
+        }
+        return PublishTargetAnalysisResponse.model_validate(payload)
 
-        ai_estimate = await self._build_ai_pricing_estimate("shopify", research.shopify, core)
-        if ai_estimate is not None:
-            recommended = self._parse_price(ai_estimate.get("recommended_price"))
-            if recommended is not None:
-                return round(recommended, 2)
+    @staticmethod
+    def _publish_vendor_for_marketplace(record: ProductRecordResponse, marketplace: MarketplaceLiteral) -> str:
+        core = record.product.core
+        vendor = core.attributes.get("brand") or core.attributes.get("vendor")
+        if vendor:
+            return vendor.strip()
+        if marketplace == "shopify":
+            return core.category or "CommandCtr"
+        return core.normalized_title.split(" ")[0] if core.normalized_title else "CommandCtr"
 
-        return round(self._estimate_base_price(core), 2)
+    @staticmethod
+    def _publish_sku_for_marketplace(record: ProductRecordResponse, marketplace: MarketplaceLiteral) -> str:
+        core = record.product.core
+        sku = core.attributes.get("sku")
+        if sku and sku.strip():
+            return sku.strip()
+        prefix = marketplace[:3].upper()
+        seed = re.sub(r"[^A-Za-z0-9]+", "", core.normalized_title or core.source_title or record.id).upper()[:8]
+        if not seed:
+            seed = record.id[:8].upper()
+        return f"{prefix}-{seed}"
 
     @staticmethod
     def _default_price_from_band(
@@ -1351,38 +1107,33 @@ class ProductService:
         marketplace: MarketplaceLiteral,
         research: MarketplaceResearchResponse,
     ) -> SuggestedPriceRangeResponse | None:
-        listing_prices = ProductService._filtered_live_listing_prices(research, core)
-        if not listing_prices:
-            listing_prices = [listing.price for listing in research.similar_listings if listing.price is not None]
-        if listing_prices:
-            observed_prices = sorted(listing_prices)
-            observed_min = observed_prices[0]
-            observed_max = observed_prices[-1]
-            observed_median = median(observed_prices)
-            observed_mean = mean(observed_prices)
-            spread = observed_max - observed_min
-            if spread <= 0:
-                spread = max(0.08 * observed_median, 5.0)
+        anchor = ProductService._product_price_anchor(core)
+        current_price = ProductService._parse_price(core.attributes.get("price")) or anchor
+        if current_price < anchor * 0.45 or current_price > anchor * 2.5:
+            current_price = anchor
 
-            marketplace_bias = {
-                "amazon": 1.0,
-                "ebay": 0.99,
-                "etsy": 1.02,
-                "tiktok": 0.97,
-                "shopify": 1.04,
-            }[marketplace]
-            recommended = round(max(0.01, (observed_median + observed_mean) / 2 * marketplace_bias), 2)
+        minimum = research.price_min
+        maximum = research.price_max
+        average = research.price_avg or research.regular_price_avg or current_price
 
-            padding = max(spread * 0.18, recommended * 0.06)
-            minimum = round(max(0.01, min(observed_min, recommended - padding)), 2)
-            maximum = round(max(observed_max, recommended + padding), 2)
-        else:
-            base_price = ProductService._estimate_base_price(core)
-            current_price = ProductService._parse_price(core.attributes.get("price")) or base_price
-            spread = max(0.18, min(0.42, 0.18 + (len(core.features) * 0.025) + (len(core.attributes) * 0.015)))
-            minimum = round(max(0.01, current_price * (1 - spread)), 2)
-            maximum = round(current_price * (1 + spread), 2)
-            recommended = round(current_price, 2)
+        if minimum is None or minimum < anchor * 0.7:
+            minimum = round(max(0.01, anchor * 0.9), 2)
+        if maximum is None or maximum < anchor * 0.85:
+            maximum = round(max(minimum, anchor * 1.12), 2)
+        if maximum < minimum:
+            maximum = round(minimum * 1.1, 2)
+
+        if average < anchor * 0.75:
+            average = anchor
+
+        multiplier = {
+            "amazon": 1.0,
+            "ebay": 0.97,
+            "etsy": 1.05,
+            "tiktok": 0.95,
+            "shopify": 1.08,
+        }[marketplace]
+        recommended = round(max(minimum, min(maximum, max(average, anchor) * multiplier)), 2)
 
         return SuggestedPriceRangeResponse(
             minimum=round(minimum, 2),
@@ -1471,41 +1222,42 @@ class ProductService:
         product_label: str,
         marketplace: MarketplaceLiteral,
         research: MarketplaceResearchResponse,
-        default_price: float | None,
-        product_summary: str = "",
-        pricing_mode: str = "live_api",
-        suggested_range: SuggestedPriceRangeResponse | None = None,
+        default_price: float,
     ) -> str:
-        if default_price is None:
+        if research.price_min is not None and research.price_max is not None:
             return (
-                f"{product_label} on {marketplace.title()} does not have enough reliable pricing evidence yet."
+                f"{product_label} on {marketplace.title()} supports a default price around ${default_price:.2f} "
+                f"inside a ${research.price_min:.2f} to ${research.price_max:.2f} band."
             )
-        if pricing_mode == "live_api":
-            source_label = "live market data"
-        elif pricing_mode == "cross_market_live_reference":
-            source_label = "cross-market live pricing reference"
-        elif pricing_mode == "gemini_search":
-            source_label = "Gemini search-grounded pricing"
-        elif pricing_mode == "estimated_range":
-            source_label = "estimated pricing range"
-        else:
-            source_label = "AI price estimate"
-        summary_min = suggested_range.minimum if suggested_range is not None else research.price_min
-        summary_max = suggested_range.maximum if suggested_range is not None else research.price_max
-        if summary_min is not None and summary_max is not None:
-            summary_part = f" {product_summary.strip()}" if product_summary.strip() else ""
-            return (
-                f"{product_label} on {marketplace.title()} supports a default price around ${default_price:.2f}."
-                f"{summary_part}"
-                f" {source_label} bands from ${summary_min:.2f} to ${summary_max:.2f}."
-            )
-        summary_part = f" {product_summary.strip()}" if product_summary.strip() else ""
-        return f"{product_label} on {marketplace.title()} {source_label} recommends a default price around ${default_price:.2f}.{summary_part}"
+        return f"{product_label} on {marketplace.title()} market analysis recommends a default price around ${default_price:.2f}."
 
     @staticmethod
     def _product_identity_label(core: CoreProductResponse) -> str:
         label = core.normalized_title.strip() or core.source_title.strip() or "Product"
         return re.sub(r"\s+", " ", label).strip()
+
+    @staticmethod
+    def _merge_publish_target_core(
+        core: CoreProductResponse,
+        payload: object | None,
+    ) -> CoreProductResponse:
+        if payload is None:
+            return core
+
+        payload_dict = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else {}
+        updates: dict[str, object] = {}
+        for field in ("normalized_title", "source_title", "category", "product_type", "product_summary", "features", "attributes"):
+            value = payload_dict.get(field)
+            if value is not None:
+                updates[field] = value
+        if not updates:
+            return core
+        return core.model_copy(update=updates)
+
+    @staticmethod
+    def _coalesce_publish_field(preferred: object | None, fallback: str) -> str:
+        text = str(preferred).strip() if preferred is not None else ""
+        return text or fallback
 
     @staticmethod
     def _parse_price(value: object) -> float | None:

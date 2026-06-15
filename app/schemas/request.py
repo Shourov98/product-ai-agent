@@ -80,3 +80,7 @@ class VariantCreateRequest(BaseModel):
 
 
 MarketplaceRequestLiteral = Literal["amazon", "ebay", "etsy", "tiktok", "shopify"]
+
+
+class PublishTargetAnalysisRequest(BaseModel):
+    marketplace: MarketplaceRequestLiteral

@@ -309,6 +309,20 @@ class ProductPricingSnapshotResponse(BaseModel):
     markets: list[MarketplacePricingSnapshotResponse] = Field(default_factory=list)
 
 
+PublishTargetAnalysisJobStatusLiteral = Literal["pending", "running", "completed", "failed"]
+
+
+class PublishTargetAnalysisJobResponse(BaseModel):
+    job_id: str
+    product_id: str
+    marketplace: MarketplaceLiteral
+    status: PublishTargetAnalysisJobStatusLiteral
+    result: PublishTargetAnalysisResponse | None = None
+    error: str | None = None
+    created_at: str
+    updated_at: str
+
+
 class PaginationMetaResponse(BaseModel):
     page: int = Field(ge=1)
     page_size: int = Field(ge=1)

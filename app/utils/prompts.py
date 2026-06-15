@@ -185,6 +185,18 @@ class PromptRegistry:
         "Prompt Version: gemini-pricing-search.v1"
     )
 
+    PUBLISH_TARGET_PROMPT_V1 = (
+        "You are a senior ecommerce publish-target analyst.\n\n"
+        "You receive the normalized core product record, the selected marketplace research bundle, and any current publish fields from the editor.\n"
+        "First identify the actual product from the title, source title, category, product type, features, attributes, and product summary.\n"
+        "Treat the current publish fields as the latest draft state if they are present.\n"
+        "Use the supplied market research plus the current product identity to estimate a practical default price and a suggested price range for the selected marketplace.\n"
+        "Do not use static category bands or canned percentage ranges. Derive the band from the observed similar-listing prices and the product's actual identity.\n"
+        "Return only schema-valid JSON and do not invent unsupported facts.\n"
+        "Prefer market-relevant language, concise storefront copy, and a SKU pattern that fits the selected marketplace.\n"
+        "Prompt Version: publish-target.v1"
+    )
+
     @classmethod
     def get_core_prompt(cls) -> str:
         return cls.CORE_PROMPT_V3
@@ -208,3 +220,7 @@ class PromptRegistry:
     @classmethod
     def get_gemini_pricing_search_prompt(cls) -> str:
         return cls.GEMINI_PRICING_SEARCH_PROMPT_V1
+
+    @classmethod
+    def get_publish_target_prompt(cls) -> str:
+        return cls.PUBLISH_TARGET_PROMPT_V1
