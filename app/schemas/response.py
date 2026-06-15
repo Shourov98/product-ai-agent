@@ -109,8 +109,6 @@ class ShopifyResponse(BaseModel):
     seo_description: str
     category: str = ""
     metafields: dict[str, str] = Field(default_factory=dict)
-    category: str = ""
-    metafields: dict[str, str] = Field(default_factory=dict)
     audit: AgentAuditMetadata | None = None
 
 
@@ -293,13 +291,7 @@ class SuggestedPriceRangeResponse(BaseModel):
 
 
 class MarketplacePricingSnapshotResponse(BaseModel):
-class MarketplacePricingSnapshotResponse(BaseModel):
     marketplace: MarketplaceLiteral
-    source_mode: str
-    search_queries: list[str] = Field(default_factory=list)
-    comparable_count: int = Field(ge=0)
-    recommended_price: float | None = Field(default=None, gt=0)
-    currency: str = "USD"
     source_mode: str
     search_queries: list[str] = Field(default_factory=list)
     comparable_count: int = Field(ge=0)
@@ -315,19 +307,6 @@ class ProductPricingSnapshotResponse(BaseModel):
     product_id: str
     generated_at: str
     markets: list[MarketplacePricingSnapshotResponse] = Field(default_factory=list)
-
-PublishTargetAnalysisJobStatusLiteral = Literal["pending", "running", "completed", "failed"]
-
-
-class PublishTargetAnalysisJobResponse(BaseModel):
-    job_id: str
-    product_id: str
-    marketplace: MarketplaceLiteral
-    status: PublishTargetAnalysisJobStatusLiteral
-    result: PublishTargetAnalysisResponse | None = None
-    error: str | None = None
-    created_at: str
-    updated_at: str
 
 
 class DynamicPricingQueryResponse(BaseModel):

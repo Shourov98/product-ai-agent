@@ -871,7 +871,7 @@ class ProductService:
                 core = await self.pipeline.attribute_mapper.process(core, vision_data)
             except Exception:
                 pass
-            core = await self._enrich_query_core_with_gemini_identity(product_name, image_payload, core)
+            core = await self._enrich_query_core_with_model_identity(product_name, image_payload, core)
         research = await self.pipeline.research.build_research_bundle(core)
         markets = [marketplace] if marketplace is not None else ["amazon", "ebay", "etsy", "tiktok", "shopify"]
         results = await asyncio.gather(
@@ -1306,12 +1306,23 @@ class ProductService:
             "similar_listings": similar_listings,
         }
 
-    async def _enrich_query_core_with_gemini_identity(
+    async def _enrich_query_core_with_model_identity(
         self,
         product_name: str,
         image_payload: ImagePayload,
         fallback_core: CoreProductResponse,
     ) -> CoreProductResponse:
+        openai_service = self.pipeline.openai_service
+        if openai_service is not None and openai_service.enabled:
+            try:
+                payload = await openai_service.analyze_image(
+                    image_bytes=image_payload.data,
+                    mime_type=image_payload.content_type or "application/octet-stream",
+                )
+                return self._merge_query_identity_payload(product_name, fallback_core, payload)
+            except OpenAIServiceError:
+                pass
+
         if not self._gemini_search_enabled():
             return fallback_core
 
@@ -1333,23 +1344,43 @@ class ProductService:
         except GeminiServiceError:
             return fallback_core
 
-        normalized_title = str(payload.get("normalized_title") or "").strip() or fallback_core.normalized_title
+        return self._merge_query_identity_payload(product_name, fallback_core, payload)
+
+    @staticmethod
+    def _merge_query_identity_payload(
+        product_name: str,
+        fallback_core: CoreProductResponse,
+        payload: dict[str, object],
+    ) -> CoreProductResponse:
+        normalized_title = str(payload.get("normalized_title") or payload.get("title") or "").strip() or fallback_core.normalized_title
         product_type = str(payload.get("product_type") or "").strip() or fallback_core.product_type
         category = str(payload.get("category") or "").strip() or fallback_core.category
         merged_attributes = dict(fallback_core.attributes)
+
+        raw_attributes = payload.get("attributes")
+        if isinstance(raw_attributes, dict):
+            for key, value in raw_attributes.items():
+                key_text = str(key).strip().lower()
+                value_text = str(value).strip()
+                if key_text and value_text:
+                    merged_attributes[key_text] = value_text
+
         for key in ("brand", "model", "color", "material", "style"):
             value = str(payload.get(key) or "").strip()
             if value:
                 merged_attributes[key] = value
+
         features = unique_strings(
             [
                 *fallback_core.features,
                 f"Image-identified product type: {product_type}." if product_type else "",
                 f"Detected brand: {merged_attributes.get('brand')}." if merged_attributes.get("brand") else "",
                 f"Detected model: {merged_attributes.get('model')}." if merged_attributes.get("model") else "",
+                f"Query title: {product_name}." if product_name else "",
             ],
             limit=8,
         )
+
         return fallback_core.model_copy(
             update={
                 "normalized_title": normalized_title,
