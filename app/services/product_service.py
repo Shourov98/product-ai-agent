@@ -1522,7 +1522,6 @@ class ProductService:
             ],
             limit=12,
         )
-        market_modifiers = ["price", "buy", "current price", "retail price", "store price", "Google Shopping", "MSRP"]
         anchors = unique_strings(
             [
                 " ".join(part for part in [brand, model, core.product_type] if part).strip(),
@@ -1537,16 +1536,21 @@ class ProductService:
             limit=16,
         )
 
-        queries = list(research.search_queries)
-        for anchor in anchors:
-            for modifier in market_modifiers:
-                queries.append(f"{anchor} {modifier}".strip())
-
-        queries.append(identity)
-        queries.append(title)
+        prioritized_queries = [
+            f"{anchors[0]} price".strip() if anchors else "",
+            f"{anchors[0]} buy".strip() if anchors else "",
+            f"{anchors[0]} Google Shopping".strip() if anchors else "",
+            f"{anchors[1]} price".strip() if len(anchors) > 1 else "",
+            f"{anchors[1]} current price".strip() if len(anchors) > 1 else "",
+            f"{anchors[2]} price".strip() if len(anchors) > 2 else "",
+            f"{identity} price".strip(),
+            f"{title} price".strip(),
+        ]
         if current_listing_title:
-            queries.append(current_listing_title)
-        return unique_strings([query for query in queries if query.strip()], limit=24)
+            prioritized_queries.append(f"{current_listing_title} price".strip())
+        if research.search_queries:
+            prioritized_queries.extend(research.search_queries[:2])
+        return unique_strings([query for query in prioritized_queries if query.strip()], limit=8)
 
     @staticmethod
     def _market_signal_for_marketplace(marketplace: MarketplaceLiteral, research: MarketplaceResearchResponse) -> str:
