@@ -946,23 +946,6 @@ class ProductService:
                     analysis_summary=gemini_estimate["analysis_summary"],
                     similar_listings=gemini_estimate.get("similar_listings") or [],
                 )
-            heuristic_suggested = self._heuristic_price_for_marketplace(core, marketplace)
-            if heuristic_suggested is not None:
-                return MarketplacePricingSnapshotResponse(
-                    marketplace=marketplace,
-                    source_mode="heuristic_estimate",
-                    search_queries=self._build_gemini_search_queries(core, marketplace, research, listing_title=listing_title),
-                    comparable_count=0,
-                    recommended_price=heuristic_suggested.recommended,
-                    currency=heuristic_suggested.currency,
-                    suggested_price_range=heuristic_suggested,
-                    market_signal=f"{marketplace.title()} heuristic estimate based on product type and material.",
-                    analysis_summary=(
-                        f"{self._product_identity_label(core)} on {marketplace.title()} does not have enough reliable search pricing data yet, "
-                        f"so a heuristic range is used for a similar {core.product_type.lower()} product."
-                    ),
-                    similar_listings=[],
-                )
             return MarketplacePricingSnapshotResponse(
                 marketplace=marketplace,
                 source_mode="insufficient_data",
@@ -993,59 +976,6 @@ class ProductService:
                 "does not have enough reliable pricing data yet."
             ),
             similar_listings=[],
-        )
-
-    @staticmethod
-    def _heuristic_price_for_marketplace(
-        core: CoreProductResponse,
-        marketplace: MarketplaceLiteral,
-    ) -> SuggestedPriceRangeResponse | None:
-        identity = " ".join(
-            [
-                core.normalized_title,
-                core.source_title,
-                core.category,
-                core.product_type,
-                core.product_summary,
-                " ".join(core.features),
-                " ".join(f"{k} {v}" for k, v in core.attributes.items()),
-            ]
-        ).lower()
-
-        base: tuple[float, float, float] | None = None
-        if any(token in identity for token in ("water bottle", "hydration bottle", "drink bottle")):
-            if "stainless steel" in identity or "metal" in identity:
-                base = (14.99, 24.99, 19.99)
-            elif "insulated" in identity or "vacuum" in identity:
-                base = (18.99, 32.99, 24.99)
-            else:
-                base = (9.99, 19.99, 14.99)
-        elif any(token in identity for token in ("tumbler", "travel mug", "coffee mug", "cup")):
-            if "stainless steel" in identity or "insulated" in identity:
-                base = (12.99, 26.99, 18.99)
-            else:
-                base = (7.99, 16.99, 11.99)
-
-        if base is None:
-            return None
-
-        minimum, maximum, recommended = base
-        marketplace_bias = {
-            "amazon": 1.0,
-            "ebay": 0.97,
-            "etsy": 1.08,
-            "tiktok": 0.95,
-            "shopify": 1.05,
-        }[marketplace]
-        minimum = round(minimum * marketplace_bias, 2)
-        maximum = round(maximum * marketplace_bias, 2)
-        recommended = round(recommended * marketplace_bias, 2)
-        return SuggestedPriceRangeResponse(
-            minimum=minimum,
-            maximum=maximum,
-            recommended=recommended,
-            currency="USD",
-            source="heuristic_estimate",
         )
 
     def add_size_variant(
