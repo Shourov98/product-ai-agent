@@ -308,7 +308,6 @@ class ProductPricingSnapshotResponse(BaseModel):
     generated_at: str
     markets: list[MarketplacePricingSnapshotResponse] = Field(default_factory=list)
 
-
 PublishTargetAnalysisJobStatusLiteral = Literal["pending", "running", "completed", "failed"]
 
 
@@ -321,6 +320,12 @@ class PublishTargetAnalysisJobResponse(BaseModel):
     error: str | None = None
     created_at: str
     updated_at: str
+
+
+class DynamicPricingQueryResponse(BaseModel):
+    query: str
+    generated_at: str
+    markets: list[MarketplacePricingSnapshotResponse] = Field(default_factory=list)
 
 
 class PaginationMetaResponse(BaseModel):

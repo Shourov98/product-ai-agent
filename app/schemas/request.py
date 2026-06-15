@@ -9,6 +9,11 @@ class ProductGenerationRequest(BaseModel):
     title: str = Field(min_length=3, max_length=200)
 
 
+class PricingQueryRequest(BaseModel):
+    product_name: str = Field(min_length=2, max_length=200)
+    marketplace: MarketplaceRequestLiteral | None = None
+
+
 class ProductOptimizationRequest(BaseModel):
     marketplaces: list[Literal["amazon", "ebay", "etsy", "tiktok", "shopify"]] | None = None
     optimize_core: bool = True

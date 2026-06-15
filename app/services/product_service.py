@@ -41,6 +41,7 @@ from app.schemas.response import (
     PublishTargetAnalysisResponse,
     PipelineValidationResponse,
     ProductPricingSnapshotResponse,
+    DynamicPricingQueryResponse,
     ProductListItemResponse,
     ProductPipelineResponse,
     ProductRecordResponse,
@@ -703,6 +704,79 @@ class ProductService:
         except Exception:
             return fallback
 
+    async def query_product_pricing(
+        self,
+        product_name: str,
+        marketplace: MarketplaceLiteral | None = None,
+    ) -> DynamicPricingQueryResponse:
+        core = self._build_query_core(product_name)
+        research = self._empty_pricing_research_bundle()
+        markets = [marketplace] if marketplace is not None else ["amazon", "ebay", "etsy", "tiktok", "shopify"]
+        results = await asyncio.gather(
+            *(self._build_marketplace_pricing_snapshot(market, self._research_for_marketplace(research, market), core, listing_title=product_name) for market in markets)
+        )
+        return DynamicPricingQueryResponse(
+            query=product_name,
+            generated_at=self._timestamp(),
+            markets=list(results),
+        )
+
+    async def _build_marketplace_pricing_snapshot(
+        self,
+        marketplace: MarketplaceLiteral,
+        research: MarketplaceResearchResponse,
+        core: CoreProductResponse,
+        listing_title: str = "",
+    ) -> MarketplacePricingSnapshotResponse:
+        if self._gemini_search_enabled():
+            gemini_estimate = await self._build_gemini_pricing_estimate(marketplace, research, core, listing_title=listing_title)
+            if gemini_estimate is not None:
+                suggested = gemini_estimate["suggested_price_range"]
+                recommended = gemini_estimate["recommended_price"]
+                return MarketplacePricingSnapshotResponse(
+                    marketplace=marketplace,
+                    source_mode="gemini_search",
+                    search_queries=gemini_estimate["search_queries"],
+                    comparable_count=gemini_estimate["comparable_count"],
+                    recommended_price=recommended,
+                    currency=suggested.currency if suggested is not None else "USD",
+                    suggested_price_range=suggested,
+                    market_signal=gemini_estimate["market_signal"],
+                    analysis_summary=gemini_estimate["analysis_summary"],
+                    similar_listings=gemini_estimate.get("similar_listings") or [],
+                )
+            return MarketplacePricingSnapshotResponse(
+                marketplace=marketplace,
+                source_mode="insufficient_data",
+                search_queries=self._build_gemini_search_queries(core, marketplace, research, listing_title=listing_title),
+                comparable_count=0,
+                recommended_price=None,
+                currency="USD",
+                suggested_price_range=None,
+                market_signal=self._insufficient_pricing_signal(marketplace, research),
+                analysis_summary=(
+                    f"{self._product_identity_label(core)} on {marketplace.title()} "
+                    "does not have enough reliable Google search pricing data yet."
+                ),
+                similar_listings=[],
+            )
+
+        return MarketplacePricingSnapshotResponse(
+            marketplace=marketplace,
+            source_mode="insufficient_data",
+            search_queries=research.search_queries,
+            comparable_count=0,
+            recommended_price=None,
+            currency="USD",
+            suggested_price_range=None,
+            market_signal=self._insufficient_pricing_signal(marketplace, research),
+            analysis_summary=(
+                f"{self._product_identity_label(core)} on {marketplace.title()} "
+                "does not have enough reliable pricing data yet."
+            ),
+            similar_listings=[],
+        )
+
     def add_size_variant(
         self,
         product_id: str,
@@ -913,6 +987,26 @@ class ProductService:
         )
 
     @staticmethod
+    def _build_query_core(product_name: str) -> CoreProductResponse:
+        normalized = product_name.strip()
+        return CoreProductResponse(
+            normalized_title=normalized,
+            category="General Merchandise",
+            product_type="general product",
+            product_summary=f"Dynamic pricing lookup for {normalized}.",
+            features=[
+                f"Query-driven pricing for {normalized}.",
+                "Uses live Google search evidence.",
+                "Ignores mismatched variants and outliers.",
+            ],
+            attributes={
+                "query": normalized,
+            },
+            source_title=normalized,
+            vision_confidence=0.0,
+        )
+
+    @staticmethod
     def _normalize_gemini_pricing_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(payload, dict):
             return None
@@ -936,6 +1030,7 @@ class ProductService:
             "query_candidates": "search_queries",
             "sources": "price_sources",
             "listings": "price_sources",
+            "similar_listings": "price_sources",
         }
         for alias, canonical in key_aliases.items():
             if canonical not in normalized and alias in normalized:
@@ -1627,3 +1722,4 @@ class ProductService:
         safe_path = quote(parts.path, safe="/%._-~")
         safe_query = quote(parts.query, safe="=&%._-~")
         return urlunsplit((parts.scheme, parts.netloc, safe_path, safe_query, parts.fragment))
+
