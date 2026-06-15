@@ -11,7 +11,7 @@ from app.schemas.response import (
     ResearchEvidenceResponse,
 )
 from app.services.ebay_market_research_service import EbayMarketResearchService, EbayMarketResearchServiceError
-from app.utils.product_text import title_keywords, unique_strings
+from app.utils.product_text import best_model_term, title_keywords, unique_strings
 
 
 class MarketResearchService:
@@ -124,6 +124,7 @@ class MarketResearchService:
         material = core_data.attributes.get("material")
         style = core_data.attributes.get("style")
         size = core_data.attributes.get("size") or core_data.attributes.get("capacity")
+        model_term = best_model_term(core_data.normalized_title, core_data.source_title, core_data.product_summary, str(model or ""))
         title_terms = title_keywords(core_data.normalized_title or core_data.source_title)
         summary_terms = title_keywords(core_data.product_summary)
         visual_identity = " ".join(
@@ -137,6 +138,7 @@ class MarketResearchService:
             core_data.source_title,
             visual_identity,
             category_identity,
+            model_term,
             " ".join(part for part in [brand, model, core_data.product_type] if part),
             " ".join(part for part in [color, material, core_data.product_type] if part),
             " ".join(part for part in [style, color, core_data.product_type] if part),

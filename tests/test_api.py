@@ -4,7 +4,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-from app.schemas.response import SuggestedPriceRangeResponse
+from app.schemas.response import ResearchEvidenceResponse, SuggestedPriceRangeResponse
 from app.services.product_service import ProductService
 
 
@@ -315,3 +315,22 @@ async def test_pricing_snapshot_prefers_gemini_search_when_enabled(monkeypatch, 
         assert entry["recommended_price"] == 619.99
         assert entry["suggested_price_range"]["minimum"] == 589.99
         assert entry["suggested_price_range"]["maximum"] == 649.99
+
+
+def test_pricing_range_from_single_source_creates_narrow_band() -> None:
+    source = ResearchEvidenceResponse(
+        source="google_shopping",
+        title="Sony PlayStation 5 Console",
+        url="https://example.com/ps5",
+        price=499.99,
+        currency="USD",
+        relevance_score=0.9,
+        attributes={},
+        observations=[],
+    )
+
+    suggested = ProductService._pricing_range_from_sources([source], marketplace="shopify")
+
+    assert suggested is not None
+    assert suggested.minimum < suggested.recommended < suggested.maximum
+    assert suggested.recommended == pytest.approx(499.99, rel=0.001)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,6 +9,9 @@ from typing import Any
 from uuid import uuid4
 
 from app.services.s3_service import S3Service
+
+
+logger = logging.getLogger(__name__)
 
 class OutputService:
     def __init__(
@@ -49,12 +53,15 @@ class OutputService:
     ) -> str:
         if self.s3_service is not None and self.s3_service.enabled:
             object_key = f"{run_dir.name}/{Path(relative_path).as_posix()}"
-            asset = self.s3_service.upload_bytes(
-                payload,
-                key=object_key,
-                mime_type=mime_type,
-            )
-            return asset.url
+            try:
+                asset = self.s3_service.upload_bytes(
+                    payload,
+                    key=object_key,
+                    mime_type=mime_type,
+                )
+                return asset.url
+            except Exception as exc:
+                logger.warning("S3 upload failed, falling back to local output: %s", exc)
 
         path = (run_dir.resolve() / relative_path).resolve()
         path.parent.mkdir(parents=True, exist_ok=True)

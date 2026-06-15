@@ -86,6 +86,30 @@ def title_keywords(title: str) -> list[str]:
     return deduped
 
 
+def extract_model_terms(*texts: str) -> list[str]:
+    haystack = " ".join(texts).strip()
+    if not haystack:
+        return []
+
+    raw_terms = re.findall(r"\b[a-zA-Z]{0,4}[\w-]*\d[\w-]*\b|\b[A-Z]{2,}[\w-]*\b", haystack)
+    candidates = []
+    for term in raw_terms:
+        normalized = re.sub(r"[_\s]+", "-", term.strip())
+        if not normalized:
+            continue
+        if normalized.lower() in STOPWORDS:
+            continue
+        if len(normalized) < 3:
+            continue
+        candidates.append(normalized)
+    return unique_strings(candidates, limit=8)
+
+
+def best_model_term(*texts: str) -> str:
+    terms = extract_model_terms(*texts)
+    return terms[0] if terms else ""
+
+
 def unique_strings(items: Iterable[str], *, limit: int | None = None) -> list[str]:
     result = []
     seen = set()

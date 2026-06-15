@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -61,7 +63,10 @@ from app.services.output_service import OutputService
 from app.services.product_store import ProductStore
 from app.services.s3_service import S3Service
 from app.utils.prompts import PromptRegistry
-from app.utils.product_text import title_keywords, unique_strings
+from app.utils.product_text import best_model_term, build_category, infer_product_type, normalize_title, title_keywords, unique_strings
+
+
+logger = logging.getLogger(__name__)
 
 
 class ProductService:
@@ -115,16 +120,10 @@ class ProductService:
         self.settings = settings
         self.pipeline = self._shared_pipeline or ProductPipeline()
         self.__class__._shared_pipeline = self.pipeline
-        self.store = self._shared_store or (
-            MongoProductStore(
-                mongodb_uri=settings.mongodb_uri,
-                db_name=settings.mongodb_db_name,
-                products_collection=settings.mongodb_products_collection,
-                imports_collection=settings.mongodb_imports_collection,
-            )
-            if settings.mongodb_uri and settings.mongodb_enabled
-            else ProductStore(settings.output_dir)
-        )
+        if self._shared_store is not None:
+            self.store = self._shared_store
+        else:
+            self.store = self._build_store(settings)
         self.__class__._shared_store = self.store
         self.output_service = self._shared_output_service or OutputService(
             settings.output_dir,
@@ -171,6 +170,20 @@ class ProductService:
         cls._shared_tiktok_agent = None
         cls._shared_shopify_agent = None
         cls._shared_optimization_agent = None
+
+    @staticmethod
+    def _build_store(settings) -> ProductStore:
+        if settings.mongodb_uri and settings.mongodb_enabled:
+            try:
+                return MongoProductStore(
+                    mongodb_uri=settings.mongodb_uri,
+                    db_name=settings.mongodb_db_name,
+                    products_collection=settings.mongodb_products_collection,
+                    imports_collection=settings.mongodb_imports_collection,
+                )
+            except Exception as exc:
+                logger.warning("Mongo store unavailable, falling back to local product store: %s", exc)
+        return ProductStore(settings.output_dir)
 
     async def generate_text_only(
         self,
@@ -708,17 +721,55 @@ class ProductService:
         self,
         product_name: str,
         marketplace: MarketplaceLiteral | None = None,
+        image_payload: ImagePayload | None = None,
     ) -> DynamicPricingQueryResponse:
         core = self._build_query_core(product_name)
-        research = self._empty_pricing_research_bundle()
+        current_price = self._parse_price(core.attributes.get("price"))
+        if image_payload is not None:
+            try:
+                vision_data = await self.pipeline.vision.process(image_payload)
+                enriched_core = await self.pipeline.core.process(product_name, vision_data)
+                enriched_core = await self.pipeline.attribute_mapper.process(enriched_core, vision_data)
+                core = self._merge_query_core(core, enriched_core)
+                current_price = current_price or self._parse_price(core.attributes.get("price"))
+            except Exception as exc:
+                logger.warning("Image-enriched pricing query failed, falling back to text-only query core: %s", exc)
+        research = await self.pipeline.research.build_research_bundle(core)
         markets = [marketplace] if marketplace is not None else ["amazon", "ebay", "etsy", "tiktok", "shopify"]
         results = await asyncio.gather(
-            *(self._build_marketplace_pricing_snapshot(market, self._research_for_marketplace(research, market), core, listing_title=product_name) for market in markets)
+            *(
+                self._build_marketplace_pricing_snapshot(
+                    market,
+                    self._research_for_marketplace(research, market),
+                    core,
+                    listing_title=product_name,
+                    current_price=current_price,
+                )
+                for market in markets
+            )
         )
         return DynamicPricingQueryResponse(
             query=product_name,
             generated_at=self._timestamp(),
             markets=list(results),
+        )
+
+    @staticmethod
+    def _merge_query_core(base: CoreProductResponse, enriched: CoreProductResponse) -> CoreProductResponse:
+        merged_attributes = dict(base.attributes)
+        merged_attributes.update({key: value for key, value in enriched.attributes.items() if value})
+        merged_features = unique_strings([*base.features, *enriched.features], limit=8)
+        return base.model_copy(
+            update={
+                "normalized_title": enriched.normalized_title or base.normalized_title,
+                "category": enriched.category or base.category,
+                "product_type": enriched.product_type or base.product_type,
+                "product_summary": enriched.product_summary or base.product_summary,
+                "features": merged_features or base.features,
+                "attributes": merged_attributes,
+                "source_title": enriched.source_title or base.source_title,
+                "vision_confidence": max(base.vision_confidence, enriched.vision_confidence),
+            }
         )
 
     async def _build_marketplace_pricing_snapshot(
@@ -727,9 +778,16 @@ class ProductService:
         research: MarketplaceResearchResponse,
         core: CoreProductResponse,
         listing_title: str = "",
+        current_price: float | None = None,
     ) -> MarketplacePricingSnapshotResponse:
         if self._gemini_search_enabled():
-            gemini_estimate = await self._build_gemini_pricing_estimate(marketplace, research, core, listing_title=listing_title)
+            gemini_estimate = await self._build_gemini_pricing_estimate(
+                marketplace,
+                research,
+                core,
+                listing_title=listing_title,
+                current_price=current_price,
+            )
             if gemini_estimate is not None:
                 suggested = gemini_estimate["suggested_price_range"]
                 recommended = gemini_estimate["recommended_price"]
@@ -744,6 +802,29 @@ class ProductService:
                     market_signal=gemini_estimate["market_signal"],
                     analysis_summary=gemini_estimate["analysis_summary"],
                     similar_listings=gemini_estimate.get("similar_listings") or [],
+                )
+            live_suggested = self._suggested_price_for_marketplace(core, marketplace, research)
+            if live_suggested is not None:
+                live_recommended = self._default_price_from_band(live_suggested, research, core, marketplace) or live_suggested.recommended
+                return MarketplacePricingSnapshotResponse(
+                    marketplace=marketplace,
+                    source_mode=research.source_mode or "market_research",
+                    search_queries=self._build_gemini_search_queries(core, marketplace, research, listing_title=listing_title),
+                    comparable_count=len(self._filtered_live_listing_prices(research, core)),
+                    recommended_price=live_recommended,
+                    currency=live_suggested.currency,
+                    suggested_price_range=live_suggested,
+                    market_signal=self._market_signal_for_marketplace(marketplace, research),
+                    analysis_summary=self._analysis_summary_for_marketplace(
+                        self._product_identity_label(core),
+                        marketplace,
+                        research,
+                        live_recommended,
+                        core.product_summary,
+                        pricing_mode=research.source_mode or "market_research",
+                        suggested_range=live_suggested,
+                    ),
+                    similar_listings=research.similar_listings[:6],
                 )
             return MarketplacePricingSnapshotResponse(
                 marketplace=marketplace,
@@ -889,11 +970,26 @@ class ProductService:
         research: MarketplaceResearchResponse,
         core: CoreProductResponse,
         listing_title: str = "",
+        current_price: float | None = None,
     ) -> dict[str, Any] | None:
         base_payload = {
             "marketplace": marketplace,
             "product_identity": self._product_identity_label(core),
+            "model_analysis": {
+                "detected_model": best_model_term(core.normalized_title, core.source_title, core.product_summary, str(core.attributes.get("model") or core.attributes.get("model_number") or "")),
+                "model_text": str(core.attributes.get("model") or core.attributes.get("model_number") or "").strip(),
+                "model_candidates": unique_strings(
+                    [
+                        best_model_term(core.normalized_title, core.source_title, core.product_summary, str(core.attributes.get("model") or core.attributes.get("model_number") or "")),
+                        str(core.attributes.get("model") or core.attributes.get("model_number") or "").strip(),
+                        *title_keywords(core.normalized_title),
+                        *title_keywords(core.source_title),
+                    ],
+                    limit=8,
+                ),
+            },
             "generated_listing_title": listing_title.strip(),
+            "current_price": current_price,
             "source_title": core.source_title,
             "category": core.category,
             "product_type": core.product_type,
@@ -991,14 +1087,17 @@ class ProductService:
 
     @staticmethod
     def _build_query_core(product_name: str) -> CoreProductResponse:
-        normalized = product_name.strip()
+        normalized = normalize_title(product_name.strip())
         query_keywords = title_keywords(normalized)[:8]
-        category = query_keywords[0].title() if query_keywords else normalized or "query"
-        product_type = query_keywords[1].title() if len(query_keywords) > 1 else category
+        product_type = infer_product_type(normalized)
+        category = build_category(product_type)
+        model_term = best_model_term(normalized)
         attributes: dict[str, str] = {
             "query": normalized,
-            "query_keywords": ", ".join(query_keywords),
+            "query_keywords": " ".join(query_keywords),
         }
+        if model_term:
+            attributes["model"] = model_term
 
         return CoreProductResponse(
             normalized_title=normalized,
@@ -1107,7 +1206,7 @@ class ProductService:
             for source in sources
             if source.price is not None and source.price > 0
         )
-        if len(prices) < 2:
+        if not prices:
             return None
 
         observed_min = prices[0]
@@ -1123,9 +1222,14 @@ class ProductService:
             "shopify": 1.04,
         }[marketplace]
         recommended = round(max(0.01, ((observed_median + observed_mean) / 2) * marketplace_bias), 2)
-        padding = max(spread * 0.18, recommended * 0.06)
-        minimum = round(max(0.01, min(observed_min, recommended - padding)), 2)
-        maximum = round(max(observed_max, recommended + padding), 2)
+        if len(prices) == 1:
+            padding = max(recommended * 0.06, 5.0)
+            minimum = round(max(0.01, recommended - padding), 2)
+            maximum = round(recommended + padding, 2)
+        else:
+            padding = max(spread * 0.18, recommended * 0.06)
+            minimum = round(max(0.01, min(observed_min, recommended - padding)), 2)
+            maximum = round(max(observed_max, recommended + padding), 2)
         return SuggestedPriceRangeResponse(
             minimum=minimum,
             maximum=maximum,
@@ -1392,6 +1496,7 @@ class ProductService:
     ) -> list[str]:
         brand = str(core.attributes.get("brand") or "").strip()
         model = str(core.attributes.get("model") or core.attributes.get("model_number") or "").strip()
+        model_term = best_model_term(core.normalized_title, core.source_title, core.product_summary, model)
         color = str(core.attributes.get("color") or "").strip()
         material = str(core.attributes.get("material") or "").strip()
         style = str(core.attributes.get("style") or "").strip()
@@ -1399,37 +1504,49 @@ class ProductService:
         identity = ProductService._product_identity_label(core)
         title = core.source_title.strip() or identity
         current_listing_title = listing_title.strip()
-        important_tokens = sorted(ProductService._important_identity_tokens(core))
-        compact_identity = " ".join(token.upper() if token in {"rtx", "gtx", "rx"} else token for token in important_tokens[:6]).strip()
-        visual_identity = " ".join(part for part in [brand, model, color, material, style, core.product_type] if part).strip()
-        category_identity = " ".join(part for part in [brand, core.category, core.product_type, color, material] if part).strip()
-        query_identity = " ".join(part for part in [current_listing_title, query_keywords, identity, title] if part).strip()
-
-        queries = unique_strings(
+        query_keyword_terms = unique_strings(title_keywords(query_keywords.replace(",", " ")), limit=8)
+        identity_terms = unique_strings(
             [
-                f"{query_identity} price".strip(),
-                f"{query_identity} buy".strip(),
-                f"{current_listing_title} price".strip(),
-                f"{identity} price",
-                f"{title} price",
-                f"{current_listing_title} buy".strip(),
-                f"{identity} buy".strip(),
-                f"{identity} retail price".strip(),
-                f"{identity} store price".strip(),
-                f"{identity} Google Shopping".strip(),
-                f"{identity} MSRP".strip(),
-                f"{visual_identity} price".strip(),
-                f"{category_identity} price".strip(),
-                f"{brand} {model} price".strip(),
-                f"{brand} {compact_identity} price".strip(),
-                f"{identity} {marketplace} price".strip(),
-                f"{marketplace} {identity} price".strip(),
-                f"{identity} current price".strip(),
-            ]
-            + list(research.search_queries),
+                identity,
+                title,
+                current_listing_title,
+                brand,
+                model,
+                model_term,
+                core.product_type,
+                core.category,
+                color,
+                material,
+                style,
+                *query_keyword_terms,
+            ],
             limit=12,
         )
-        return [query for query in queries if query.strip()]
+        market_modifiers = ["price", "buy", "current price", "retail price", "store price", "Google Shopping", "MSRP"]
+        anchors = unique_strings(
+            [
+                " ".join(part for part in [brand, model, core.product_type] if part).strip(),
+                " ".join(part for part in [brand, model_term or model, core.product_type] if part).strip(),
+                " ".join(part for part in [title, core.category, material] if part).strip(),
+                " ".join(part for part in [current_listing_title, core.category, core.product_type] if part).strip(),
+                " ".join(part for part in [identity, marketplace] if part).strip(),
+                " ".join(part for part in [identity, core.product_type] if part).strip(),
+                " ".join(part for part in [brand, core.category, color, material] if part).strip(),
+            ]
+            + identity_terms,
+            limit=16,
+        )
+
+        queries = list(research.search_queries)
+        for anchor in anchors:
+            for modifier in market_modifiers:
+                queries.append(f"{anchor} {modifier}".strip())
+
+        queries.append(identity)
+        queries.append(title)
+        if current_listing_title:
+            queries.append(current_listing_title)
+        return unique_strings([query for query in queries if query.strip()], limit=24)
 
     @staticmethod
     def _market_signal_for_marketplace(marketplace: MarketplaceLiteral, research: MarketplaceResearchResponse) -> str:

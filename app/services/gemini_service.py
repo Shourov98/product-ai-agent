@@ -58,8 +58,11 @@ class GeminiService:
 
         url = f"{self.api_base_url}/models/{self.model}:generateContent"
         params = {"key": self.api_key}
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.post(url, params=params, json=payload)
+        try:
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                response = await client.post(url, params=params, json=payload)
+        except httpx.HTTPError as exc:
+            raise GeminiServiceError(f"Gemini request failed: {exc}") from exc
         if response.status_code >= 400:
             raise GeminiServiceError(
                 f"Gemini request failed with status {response.status_code}: {response.text[:240]}"

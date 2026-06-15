@@ -3,7 +3,15 @@ from __future__ import annotations
 from app.schemas.response import CoreProductResponse, VisionResponse
 from app.services.gemini_service import GeminiService, GeminiServiceError
 from app.services.openai_service import OpenAIService, OpenAIServiceError
-from app.utils.product_text import build_category, infer_product_type, normalize_title, sentence_case_summary, title_keywords, unique_strings
+from app.utils.product_text import (
+    best_model_term,
+    build_category,
+    infer_product_type,
+    normalize_title,
+    sentence_case_summary,
+    title_keywords,
+    unique_strings,
+)
 
 
 class CoreAgent:
@@ -81,13 +89,23 @@ class CoreAgent:
             timestamp=datetime.now(UTC).isoformat(),
             validation_passed=True,
         )
+        attributes = self._ensure_string_dict(data.get("attributes"), fallback.attributes)
+        model_term = best_model_term(
+            title,
+            fallback.normalized_title,
+            fallback.source_title,
+            str(data.get("normalized_title") or ""),
+            str(data.get("product_summary") or ""),
+        )
+        if model_term and "model" not in attributes:
+            attributes["model"] = model_term
         return CoreProductResponse(
             normalized_title=str(data.get("normalized_title", fallback.normalized_title)),
             category=str(data.get("category", fallback.category)),
             product_type=str(data.get("product_type", fallback.product_type)),
             product_summary=str(data.get("product_summary", fallback.product_summary)),
             features=self._ensure_string_list(data.get("features"), fallback.features),
-            attributes=self._ensure_string_dict(data.get("attributes"), fallback.attributes),
+            attributes=attributes,
             source_title=title,
             vision_confidence=vision_data.confidence,
             audit=audit_meta,
@@ -97,6 +115,9 @@ class CoreAgent:
     def _build_fallback(self, title: str, vision_data: VisionResponse) -> CoreProductResponse:
         normalized_title = normalize_title(title)
         attributes = self._merge_attributes(vision_data)
+        model_term = best_model_term(title, vision_data.product_type, vision_data.image_analysis.filename, normalized_title)
+        if model_term and "model" not in attributes:
+            attributes["model"] = model_term
         product_type = infer_product_type(title, vision_data.product_type, vision_data.image_analysis.filename)
         category = build_category(product_type)
         features = self._build_features(normalized_title, attributes, vision_data)

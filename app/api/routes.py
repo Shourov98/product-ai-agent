@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 
 from app.auth import AuthenticatedUser, get_optional_current_user
@@ -51,6 +52,15 @@ async def _read_image_payload(image: UploadFile) -> ImagePayload:
     )
 
 
+async def _query_product_pricing_response(
+    product_name: str,
+    marketplace: MarketplaceRequestLiteral | None = None,
+    image_payload: ImagePayload | None = None,
+) -> DynamicPricingQueryResponse:
+    service = ProductService()
+    return await service.query_product_pricing(product_name, marketplace=marketplace, image_payload=image_payload)
+
+
 @router.get("/health")
 async def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
@@ -65,8 +75,52 @@ async def query_product_pricing(
     payload: PricingQueryRequest,
     current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
 ) -> DynamicPricingQueryResponse:
-    service = ProductService()
-    return await service.query_product_pricing(payload.product_name, marketplace=payload.marketplace)
+    image_payload = None
+    if payload.image_data_base64:
+        image_bytes = base64.b64decode(payload.image_data_base64)
+        image_payload = ImagePayload(
+            filename=payload.image_filename or "pricing-query.bin",
+            content_type=payload.image_content_type or "application/octet-stream",
+            data=image_bytes,
+        )
+    if payload.current_price is not None:
+        product_name = f"{payload.product_name} current price {payload.current_price:.2f}"
+    else:
+        product_name = payload.product_name
+    return await _query_product_pricing_response(product_name, marketplace=payload.marketplace, image_payload=image_payload)
+
+
+@router.post(
+    "/pricing/query/text",
+    response_model=DynamicPricingQueryResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def query_product_pricing_text(
+    payload: PricingQueryRequest,
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> DynamicPricingQueryResponse:
+    if payload.current_price is not None:
+        product_name = f"{payload.product_name} current price {payload.current_price:.2f}"
+    else:
+        product_name = payload.product_name
+    return await _query_product_pricing_response(product_name, marketplace=payload.marketplace)
+
+
+@router.post(
+    "/pricing/query/image",
+    response_model=DynamicPricingQueryResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def query_product_pricing_image(
+    title: str = Form(...),
+    image: UploadFile = File(...),
+    marketplace: MarketplaceRequestLiteral | None = Form(default=None),
+    current_price: float | None = Form(default=None),
+    current_user: AuthenticatedUser | None = Depends(get_optional_current_user),
+) -> DynamicPricingQueryResponse:
+    payload = await _read_image_payload(image)
+    product_name = f"{title} current price {current_price:.2f}" if current_price is not None else title
+    return await _query_product_pricing_response(product_name, marketplace=marketplace, image_payload=payload)
 
 
 @router.post(

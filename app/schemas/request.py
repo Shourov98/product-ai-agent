@@ -12,6 +12,10 @@ class ProductGenerationRequest(BaseModel):
 class PricingQueryRequest(BaseModel):
     product_name: str = Field(min_length=2, max_length=200)
     marketplace: MarketplaceRequestLiteral | None = None
+    current_price: float | None = Field(default=None, gt=0)
+    image_filename: str | None = Field(default=None, min_length=1, max_length=255)
+    image_content_type: str | None = Field(default=None, min_length=1, max_length=120)
+    image_data_base64: str | None = None
 
 
 class ProductOptimizationRequest(BaseModel):

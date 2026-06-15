@@ -5,7 +5,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
-from langgraph.graph import END, START, StateGraph
+try:
+    from langgraph.graph import END, START, StateGraph
+except ModuleNotFoundError:  # pragma: no cover - exercised in environments without langgraph
+    END = START = None
+    StateGraph = None
 
 from app.agents.amazon_agent import AmazonAgent
 from app.agents.attribute_mapper_agent import AttributeMapperAgent
@@ -104,6 +108,8 @@ class ProductAgentGraph:
         return self._finalize(result)
 
     def _build_graph(self):
+        if StateGraph is None:
+            return _SequentialProductAgentApp(self)
         graph = StateGraph(ProductAgentState)
         graph.add_node("vision", self._vision_node)
         graph.add_node("core", self._core_node)
@@ -248,3 +254,21 @@ class ProductAgentGraph:
         if value is None:
             raise RuntimeError(f"Graph node '{node}' did not produce a value.")
         return value
+
+
+class _SequentialProductAgentApp:
+    """Fallback runner used when langgraph is not installed."""
+
+    def __init__(self, graph: ProductAgentGraph) -> None:
+        self.graph = graph
+
+    async def ainvoke(self, state: ProductAgentState) -> ProductAgentState:
+        next_state = dict(state)
+        next_state.update(await self.graph._vision_node(next_state))
+        next_state.update(await self.graph._core_node(next_state))
+        next_state.update(await self.graph._research_node(next_state))
+        next_state.update(await self.graph._seo_node(next_state))
+        next_state.update(await self.graph._marketplace_node(next_state))
+        next_state.update(await self.graph._image_node(next_state))
+        next_state.update(await self.graph._validation_node(next_state))
+        return next_state
