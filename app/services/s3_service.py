@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import boto3
 from botocore.config import Config
@@ -53,5 +54,6 @@ class S3Service:
             Body=payload,
             ContentType=mime_type,
         )
-        url = f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{object_key}"
+        encoded_object_key = quote(object_key, safe="/")
+        url = f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{encoded_object_key}"
         return S3Asset(url=url, key=object_key)

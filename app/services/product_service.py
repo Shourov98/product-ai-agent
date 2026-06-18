@@ -2101,6 +2101,8 @@ class ProductService:
     @staticmethod
     def _safe_remote_url(url: str) -> str:
         parts = urlsplit(url)
-        safe_path = quote(parts.path, safe="/%._-~")
-        safe_query = quote(parts.query, safe="=&%._-~")
+        normalized_path = re.sub(r"%(?![0-9A-Fa-f]{2})", "%25", parts.path)
+        normalized_query = re.sub(r"%(?![0-9A-Fa-f]{2})", "%25", parts.query)
+        safe_path = quote(normalized_path, safe="/%._-~")
+        safe_query = quote(normalized_query, safe="=&%._-~")
         return urlunsplit((parts.scheme, parts.netloc, safe_path, safe_query, parts.fragment))
